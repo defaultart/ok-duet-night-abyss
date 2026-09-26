@@ -13,6 +13,7 @@ class LabelEnum(str, Enum):
     fish_ease = 'fish_ease'
     letter_reward_confirm = 'letter_reward_confirm'
     letter_select_not_use = 'letter_select_not_use'
+    lv_prefix = 'lv_prefix'
     lv_text = 'lv_text'
     manual_select_not_use = 'manual_select_not_use'
     mech_maze_1 = 'mech_maze_1'
@@ -42,4 +43,5 @@ class LabelEnum(str, Enum):
     suyi_q_off = 'suyi_q_off'
     suyi_q_on = 'suyi_q_on'
     track_point = 'track_point'
+    ultimate_keycap = 'ultimate_keycap'
     ultimate_key_icon = 'ultimate_key_icon'

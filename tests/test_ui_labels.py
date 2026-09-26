@@ -6,7 +6,8 @@ import src.tasks.CommissionsTask as commissions_module
 from src.config import config
 from ok.test.TaskTestCase import TaskTestCase
 
-from src.tasks.CommissionsTask import CommissionsTask, _default_movement, normalize_ocr_scale
+from src.tasks.CommissionsTask import (CommissionsTask, _default_movement,
+                                       normalize_ocr_scale, reset_action_box_for_row)
 from src.tasks.config.CommissionConfig import LETTER_HANDLE_AUTO_SELECT_FIRST
 from src.dna_ui.Defs import COORD, DISCRIMINATORS, REWARD_COUNT_BOX, REWARD_SELECTED_BOX
 
@@ -47,6 +48,17 @@ class TestUiLabels(TaskTestCase):
             self.assertIsNotNone(feature, f'{image} should match')
         else:
             self.assertIsNone(feature, f'{image} should not match')
+
+    def test_reset_position_row_ocr_drives_safe_action_column(self):
+        self.set_image(IMAGES + 'settings_other.png')
+
+        row = self.task.find_reset_position_row()
+        self.assertIsNotNone(row)
+        self.assertEqual(row.name, '重置位置')
+        action = reset_action_box_for_row(row, self.task.width, self.task.height)
+        self.assertGreaterEqual(action.x, round(self.task.width * 1166 / 1600))
+        self.assertLessEqual(action.x + action.width, round(self.task.width * 1469 / 1600))
+        self.assertLess(abs((action.y + action.height // 2) - (row.y + row.height // 2)), 2)
 
     # ---- 开始界面：开始按钮 ----
 
@@ -283,6 +295,19 @@ class TestUiLabels(TaskTestCase):
 
     def test_in_team_on_hud(self):
         self._check('hud_explore_round1.png', self.task.in_team, expected=True)
+
+    def test_in_team_on_lise_lv60_defence_hud(self):
+        """等级数字和黎瑟 Q 图标变化后，稳定前缀/键帽仍应判定为局内。"""
+        self._check('hud_defence_lise_lv60_windowed.png', self.task.in_team, expected=True)
+
+    def test_stable_ingame_markers_on_lise_lv60_hud(self):
+        self.set_image(IMAGES + 'hud_defence_lise_lv60_windowed.png')
+        self.assertIsNotNone(self.task.find_one(
+            'lv_prefix', threshold=0.85, box=self.task.screen_box('LV_PREFIX')
+        ))
+        self.assertIsNotNone(self.task.find_one(
+            'ultimate_keycap', threshold=0.85, box=self.task.screen_box('ULTIMATE_KEYCAP')
+        ))
 
     def test_in_team_only_in_ingame(self):
         """除局内 HUD 外，全部 26 张截图都必须判为**非局内**。

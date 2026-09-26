@@ -1,20 +1,19 @@
 from qfluentwidgets import FluentIcon
-import time
-import win32con
 
 from ok import Logger, TaskDisabledException
 from src.tasks.DNAOneTimeTask import DNAOneTimeTask
-from src.tasks.CommissionsTask import CommissionsTask, Mission
+from src.tasks.CommissionsTask import CommissionsTask
 from src.tasks.BaseCombatTask import BaseCombatTask
 
 from src.tasks.AutoDefence import AutoDefence
+from src.tasks.trigger.AutoLiseUltimateTask import AutoLiseUltimateTask
 
 logger = Logger.get_logger(__name__)
 
 
 class Auto65ArtifactTask_Fast(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
     """
-    移动更快的自动30/65级mod，路径参考EMT
+    自动30/65级魔之楔本；进本后直接复位到战斗位置。
     """
 
     def __init__(self, *args, **kwargs):
@@ -31,16 +30,35 @@ class Auto65ArtifactTask_Fast(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
         for key in keys_to_delete:
             self.default_config.pop(key, None)
 
+        self.default_config["是否黎瑟"] = False
+        self.config_description["是否黎瑟"] = "复位成功3秒后按一次终结技键"
+        self.default_config["最多场数"] = 10
+        self.config_description["最多场数"] = "最多完成多少个战斗轮次（最小为1）"
+
         self.action_timeout = 10
+        self._lise_ultimate_task = None
+        self._lise_auto_started = False
 
     def run(self):
         """主运行方法"""
         DNAOneTimeTask.run(self)
         self.move_mouse_to_safe_position(save_current_pos=False)
         self.set_check_monthly_card()
+        _to_do_task = self
+        original_info_set = None
         try:
             _to_do_task = self.get_task_by_class(AutoDefence)
-            _to_do_task.config_external_movement(self.walk_to_aim, self.config)
+            self._lise_auto_started = False
+            self._lise_ultimate_task = None
+            if self.config.get("是否黎瑟", False):
+                self._lise_ultimate_task = self.get_task_by_class(AutoLiseUltimateTask)
+            _to_do_task.config_external_movement(
+                self.walk_to_aim,
+                self.config,
+                immediate=True,
+                restart_on_combat_timeout=False,
+                runtime_tick=self.run_lise_ultimate_tick if self._lise_ultimate_task else None,
+            )
             original_info_set = _to_do_task.info_set
             _to_do_task.info_set = self.info_set
             return _to_do_task.do_run()
@@ -50,8 +68,13 @@ class Auto65ArtifactTask_Fast(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             logger.error("AutoMyDungeonTask error", e)
             raise
         finally:
+            self._lise_auto_started = False
             if _to_do_task is not self:
-                _to_do_task.info_set = original_info_set
+                _to_do_task.external_runtime_tick = None
+                if original_info_set is not None:
+                    _to_do_task.info_set = original_info_set
+            if self._lise_ultimate_task is not None:
+                self._lise_ultimate_task.reset_detection()
 
     # def do_run(self):
     #     """执行任务的核心逻辑"""
@@ -127,112 +150,34 @@ class Auto65ArtifactTask_Fast(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
     #         self.sleep(0.2)
 
     def walk_to_aim(self, delay=0):
-        """
-        从起点走到目标位置的路径
-        路径参考: EMT中的扼守-30or65.json，使用复位
-        """
-        logger.info("开始移动到目标位置")
-        move_start = time.time()
-
+        """进入副本后不再跑录制路线，立即复位并传送到目标位置。"""
+        logger.info("进入副本，直接复位到目标位置")
+        self._lise_auto_started = False
         try:
-            # ===== 根据扼守-30or65.json录制的路径 =====
-
-            # 0.52s: 开始向前移动
-            self.send_key_down("lalt")
-
-            self.sleep(delay)
-            self.send_key_down("w")
-
-            # 1.11s: 开始冲刺 (0.59s后)
-            self.sleep(0.59)
-            self.send_key_down(self.get_dodge_key())
-
-            # 1.33s: 向左移动 (0.22s后)
-            self.sleep(0.22)
-            self.send_key_down("a")
-
-            # 2.41s: 停止前进 (1.08s后)
-            self.sleep(1.08)
-            self.send_key_up("w")
-
-            # 3.85s: 再次向前 (1.44s后)
-            self.sleep(1.44)
-            self.send_key_down("w")
-
-            # 3.94s: 停止向左 (0.09s后)
-            self.sleep(0.09)
-            self.send_key_up("a")
-
-            # 4.84s: 再次向左 (0.90s后)
-            self.sleep(0.90)
-            self.send_key_down("a")
-
-            # 5.22s-7.82s: Shift连续切换 (可能在调整位置)
-            self.sleep(0.38)
-            self.send_key_up(self.get_dodge_key())
-            self.sleep(0.24)
-            self.send_key(self.get_dodge_key(), down_time=0.35)
-            self.sleep(0.79)
-            self.send_key(self.get_dodge_key(), down_time=0.41)
-            self.sleep(0.80)
-            self.send_key_down(self.get_dodge_key())
-
-            # 9.09s: 停止前进 (1.27s后)
-            self.sleep(1.27)
-            self.send_key_up("w")
-
-            # 9.56s: 短暂前进 (0.47s后)
-            self.sleep(0.47)
-            self.send_key_down("w")
-
-            # 9.91s: 停止前进 (0.35s后)
-            self.sleep(0.35)
-            self.send_key_up("w")
-
-            # 10.70s: 跳跃 (0.79s后)
-            self.sleep(0.79)
-            self.send_key("space", down_time=0.09)
-
-            # 12.83s: 短暂后退调整 (2.04s后)
-            self.sleep(2.04)
-            self.send_key("s", down_time=0.09)
-
-            # 13.32s: 短暂前进调整 (0.40s后)
-            self.sleep(0.40)
-            self.send_key("w", down_time=0.10)
-
-            # 13.86s: 再次短暂后退 (0.44s后)
-            self.sleep(0.44)
-            self.send_key("s", down_time=0.10)
-
-            # 18.89s-18.99s: 释放所有移动键 (4.93s后)
-            self.sleep(4.93)
-            self.send_key_up(self.get_dodge_key())
-            self.sleep(0.10)
-            self.send_key_up("a")
-
-            self.send_key_up("lalt")
-            # 19.97s: 复位并传送到目标位置
-            if not self.reset_and_transport():
+            if not self.reset_and_transport(verify_in_team=False):
                 logger.info("复位失败，重开任务...")
                 self.give_up_mission()
-                return
-
-            # ===== 路径编写结束 =====
-
-            elapsed = time.time() - move_start
-            logger.info(f"移动完成，用时 {elapsed:.1f}秒")
+                return False
+            logger.info("复位完成")
+            if self.config.get("是否黎瑟", False):
+                logger.info("黎瑟模式：3秒后开启终结技")
+                self.sleep(3)
+                self.send_key(self.get_ultimate_key())
+                logger.info("黎瑟模式：已发送终结技按键")
+                if self._lise_ultimate_task is not None:
+                    self._lise_ultimate_task.reset_detection()
+                    self._lise_auto_started = True
+                    logger.info("黎瑟模式：已启动Q自动开启监控")
+            return True
 
         except TaskDisabledException:
             raise
         except Exception as e:
-            logger.error("移动过程出错", e)
+            logger.error("复位过程出错", e)
             raise
-        finally:
-            # 确保释放所有按键
-            self.send_key_up("w")
-            self.send_key_up("a")
-            self.send_key_up("s")
-            self.send_key_up("d")
-            self.send_key_up(self.get_dodge_key())
-            self.send_key_up("lalt")
+
+    def run_lise_ultimate_tick(self):
+        """仅在当前魔之楔任务完成首次Q后复用黎瑟自动开启检测。"""
+        if not self._lise_auto_started or self._lise_ultimate_task is None:
+            return
+        return self._lise_ultimate_task.run()

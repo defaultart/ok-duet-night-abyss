@@ -5,7 +5,7 @@ import cv2
 from enum import Enum
 from functools import cached_property
 
-from ok import TaskDisabledException
+from ok import Box, TaskDisabledException
 from src.tasks.BaseDNATask import BaseDNATask, isolate_white_text_to_black, color_filter
 from src.dna_ui.Defs import (Ui, COORD, REF_WIDTH, REF_HEIGHT,
                              REWARD_COUNT_BOX, REWARD_SELECTED_BOX)
@@ -27,6 +27,31 @@ from src.tasks.config.CommissionSkillConfig import CommissionSkillConfig
 AUTO_ADVANCE_TIME_OUT = 20
 # 检测到进入战斗后仍继续前进的秒数：战斗判据出现得比"走进交战区"早一点
 AUTO_ADVANCE_EXTRA_TIME = 2
+
+RESET_POSITION_TEXT = re.compile(r"^\s*重置位置\s*$")
+
+
+def reset_action_box_for_row(reset_row, screen_width, screen_height):
+    """把 OCR 识别到的“重置位置”行映射到同一行右侧的“复位角色”操作框。"""
+    if reset_row is None or not RESET_POSITION_TEXT.match(reset_row.name or ""):
+        raise ValueError("未识别到完整的‘重置位置’文本")
+
+    min_y = round(screen_height * 180 / REF_HEIGHT)
+    max_y = round(screen_height * 740 / REF_HEIGHT)
+    center_y = reset_row.y + reset_row.height // 2
+    if not min_y <= center_y <= max_y:
+        raise ValueError(f"‘重置位置’行位置异常: y={center_y}")
+
+    x1 = round(screen_width * 1166 / REF_WIDTH)
+    x2 = round(screen_width * 1469 / REF_WIDTH)
+    half_height = max(8, round(screen_height * 10 / REF_HEIGHT))
+    return Box(
+        x1,
+        center_y - half_height,
+        width=x2 - x1,
+        height=half_height * 2,
+        name="reset_character_action",
+    )
 
 
 class Mission(Enum):
@@ -746,7 +771,17 @@ class CommissionsTask(BaseDNATask):
         self.mission_status = None
         return ret
 
-    def reset_and_transport(self):
+    def reset_and_transport(self, verify_in_team=True):
+        previous_fidget_pause = self.set_fidget_actions_paused(True)
+        # 防挂机线程可能正处于一次按键动作中；等它完全退出当前动作再操作菜单。
+        if not previous_fidget_pause:
+            self.sleep(1.0)
+        try:
+            return self._reset_and_transport_impl(verify_in_team=verify_in_team)
+        finally:
+            self.set_fidget_actions_paused(previous_fidget_pause)
+
+    def _reset_and_transport_impl(self, verify_in_team=True):
         # 1) 打开局内菜单(ESC 菜单)
         self.open_in_mission_menu()
         self.wait_until(
@@ -764,17 +799,38 @@ class CommissionsTask(BaseDNATask):
         self.wait_until(
             condition=lambda: self.calculate_color_percentage(setting_menu_selected_color, setting_other) > 0.24,
             # 3) 点击“其他设置”页签(setting_other), 直到该页签呈选中状态(通过颜色占比判断)，点击不要那么频繁
-            post_action=lambda: self.click_box_random(setting_other, after_sleep=0.5),
+            post_action=lambda: self.click_box_random(
+                setting_other,
+                after_sleep=0.5,
+                exact_down_time=0.01,
+            ),
             time_out=10,
+            raise_if_not_found=True,
         )
         self.sleep(0.5)
-        reset_area = self.screen_box('RESET_CHARACTER_AREA')
+
+        # “其他”页会保留滚动位置。不要主动滚动：游戏内滚轮方向与框架约定
+        # 相反时会把列表拉到底。直接按当前可见的“重置位置”实际行定位。
+        self.wait_until(
+            condition=self.find_stable_reset_position_row,
+            time_out=5,
+            raise_if_not_found=True,
+        )
         safe_box2 = self.screen_box('RESET_OK_SAFE_BOX')
 
         def click_reset_entry():
-            # 「复位角色」整条都能点，框内随机点
-            self.click_box_random(reset_area, after_sleep=0.5,
-                                  use_safe_move=True, safe_move_box=reset_area)
+            # 每次点击前重新做双帧稳定检查，绝不复用列表移动前的旧坐标。
+            current_row = self.find_stable_reset_position_row()
+            if current_row is None:
+                raise RuntimeError("‘重置位置’仍在移动或识别失败，已停止点击")
+            current_area = reset_action_box_for_row(current_row, self.width, self.height)
+            self.click_box_random(
+                current_area,
+                after_sleep=0.5,
+                use_safe_move=True,
+                safe_move_box=current_area,
+                exact_down_time=0.01,
+            )
 
         def click_reset_ok():
             self.click_ui_coord(COORD.RESET_TRANSPORT_OK, name="reset_transport_ok",
@@ -782,15 +838,57 @@ class CommissionsTask(BaseDNATask):
 
         # 4) 点「复位角色」，直到二次确认弹窗出现
         self.wait_until(condition=self.find_reset_confirm,
-                        post_action=click_reset_entry, time_out=10)
+                        post_action=click_reset_entry, time_out=10,
+                        raise_if_not_found=True)
         self.sleep(0.5)
         # 5) 点弹窗的「确定」，直到弹窗消失 —— 保证弹框流程真正走完
         self.wait_until(condition=lambda: not self.find_reset_confirm(),
-                        post_action=click_reset_ok, time_out=10)
+                        post_action=click_reset_ok, time_out=10,
+                        raise_if_not_found=True)
+        if not verify_in_team:
+            return True
         if not self.wait_until(self.in_team, time_out=10):
             self.ensure_main()
             return False
         return True
+
+    def find_reset_position_row(self):
+        """在当前滚动位置查找“重置位置”；找不到时返回 None，禁止猜坐标点击。"""
+        rows = self.ocr(
+            box=self.screen_box('SETTINGS_LIST_TEXT'),
+            match=RESET_POSITION_TEXT,
+            threshold=0.8,
+            name="reset_position_row",
+        )
+        if len(rows) != 1:
+            if rows:
+                self.log_info(f"‘重置位置’OCR结果数量异常: {len(rows)}")
+            return None
+        try:
+            reset_action_box_for_row(rows[0], self.width, self.height)
+        except ValueError as exc:
+            self.log_info(str(exc))
+            return None
+        return rows[0]
+
+    def find_stable_reset_position_row(self):
+        """连续两帧的目标行位置一致时才允许点击。"""
+        first = self.find_reset_position_row()
+        if first is None:
+            return None
+        self.sleep(0.25)
+        second = self.find_reset_position_row()
+        if second is None:
+            return None
+
+        first_center_y = first.y + first.height // 2
+        second_center_y = second.y + second.height // 2
+        if abs(first_center_y - second_center_y) > 2:
+            self.log_info(
+                f"‘重置位置’仍在移动: y={first_center_y}->{second_center_y}，本次不点击"
+            )
+            return None
+        return second
 
     def find_letter_interface(self):
         """密函选择弹窗（局外/局内两套布局都算）—— 只用「⊘ 不使用」图标。

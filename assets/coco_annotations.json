@@ -1048,6 +1048,36 @@
             ],
             "area": 576,
             "iscrowd": 0
+        },
+        {
+            "id": 58,
+            "image_id": 8,
+            "category_id": 58,
+            "bbox": [
+                78,
+                853,
+                18,
+                17
+            ],
+            "area": 306,
+            "iscrowd": 0,
+            "ignore": 0,
+            "segmentation": []
+        },
+        {
+            "id": 59,
+            "image_id": 8,
+            "category_id": 59,
+            "bbox": [
+                1429,
+                826,
+                20,
+                16
+            ],
+            "area": 320,
+            "iscrowd": 0,
+            "ignore": 0,
+            "segmentation": []
         }
     ],
     "categories": [
@@ -1334,6 +1364,16 @@
         {
             "id": 57,
             "name": "action_dialog_continue2",
+            "supercategory": ""
+        },
+        {
+            "id": 58,
+            "name": "lv_prefix",
+            "supercategory": ""
+        },
+        {
+            "id": 59,
+            "name": "ultimate_keycap",
             "supercategory": ""
         }
     ]

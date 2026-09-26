@@ -84,7 +84,7 @@ class BaseDNATask(BaseTask):
         self.next_monthly_card_start = 0
         self._logged_in = False
         self.enable_fidget_action = True
-        self.fidget_params = {"hold_lalt": False, "skip_jitter": False}
+        self.fidget_params = {"hold_lalt": False, "skip_jitter": False, "paused": False}
         self.sensitivity_config = self.get_global_config('Game Sensitivity Config')  # 游戏灵敏度配置
         self.onetime_seen = set()
         self.onetime_queue = deque()
@@ -160,9 +160,16 @@ class BaseDNATask(BaseTask):
     def in_team(self, frame=None) -> bool:
         """是否在**局内**（回答"我在不在游戏里"，不是"我能不能打架"）。
 
-        盖着 HUD 的界面（ESC 菜单、设置页）也算局内，因为上面的 lv_text 还在。
+        优先匹配不随角色等级、技能状态变化的「Lv.」前缀和 Q 键帽；旧的完整等级与
+        终结技图标只作兼容兜底。ESC 菜单、设置页遮住 HUD 时不算局内。
         """
         _frame = self.frame if frame is None else frame
+        if self.find_one('lv_prefix', frame=_frame, threshold=0.85,
+                         box=self.screen_box('LV_PREFIX')):
+            return True
+        if self.find_one('ultimate_keycap', frame=_frame, threshold=0.85,
+                         box=self.screen_box('ULTIMATE_KEYCAP')):
+            return True
         if self.find_one('lv_text', frame=_frame, threshold=0.8):
             return True
         # 补判：右下角「Q」终结技键图标（局内才有，开始界面同位置是委托报酬面板）
@@ -377,12 +384,18 @@ class BaseDNATask(BaseTask):
         abs_pos = self.executor.interaction.capture.get_abs_cords(random_x, random_y)
         win32api.SetCursorPos(abs_pos)
     
-    def _perform_random_click(self, x_abs, y_abs, use_safe_move=False, safe_move_box: Union[list[Box], Box, None]=None, down_time=0.0, post_sleep=0.0, after_sleep=0.0):
+    def _perform_random_click(self, x_abs, y_abs, use_safe_move=False,
+                              safe_move_box: Union[list[Box], Box, None] = None,
+                              down_time=0.0, post_sleep=0.0, after_sleep=0.0,
+                              exact_down_time=None):
         x = int(x_abs)
         y = int(y_abs)
 
         _post_sleep = 0.0 if post_sleep <= 0 else post_sleep + random.uniform(0.05, 0.15)
-        _down_time = random.uniform(0.06, 0.13) if down_time <= 0 else max(0.05, down_time + random.uniform(0.0, 0.13))
+        if exact_down_time is not None:
+            _down_time = max(0.001, float(exact_down_time))
+        else:
+            _down_time = random.uniform(0.06, 0.13) if down_time <= 0 else max(0.05, down_time + random.uniform(0.0, 0.13))
         _after_sleep = random.uniform(0.01, 0.04) if after_sleep <= 0 else after_sleep + random.uniform(0.02, 0.08)
         
         self.sleep(_post_sleep)
@@ -429,7 +442,9 @@ class BaseDNATask(BaseTask):
             after_sleep=after_sleep
         )
     
-    def click_box_random(self, box: Box, down_time=0.0, post_sleep=0.0, after_sleep=0.0, use_safe_move=False, safe_move_box=None, left_extend=0.0, right_extend=0.0, up_extend=0.0, down_extend=0.0):
+    def click_box_random(self, box: Box, down_time=0.0, post_sleep=0.0, after_sleep=0.0, use_safe_move=False,
+                         safe_move_box=None, left_extend=0.0, right_extend=0.0, up_extend=0.0,
+                         down_extend=0.0, exact_down_time=None):
         le_px = left_extend * self.width
         re_px = right_extend * self.width
         ue_px = up_extend * self.height
@@ -449,7 +464,8 @@ class BaseDNATask(BaseTask):
             safe_move_box=safe_move_box, 
             down_time=down_time,
             post_sleep=post_sleep,
-            after_sleep=after_sleep
+            after_sleep=after_sleep,
+            exact_down_time=exact_down_time,
         )
 
     def click_relative_random(self, x1, y1, x2, y2, down_time=0.0, post_sleep=0.0, after_sleep=0.0, use_safe_move=False, safe_move_box=None):
@@ -773,11 +789,26 @@ class BaseDNATask(BaseTask):
             
             time.sleep(magic_after_sleep)
 
+        def fidget_is_paused():
+            nonlocal lalt_pressed, needs_resync
+            if not self.fidget_params.get("paused", False):
+                return False
+            # 精确菜单操作期间不能残留修饰键；解除暂停后按原配置自动恢复。
+            if lalt_pressed:
+                send_key_raw("lalt", False)
+                lalt_pressed = False
+                needs_resync = False
+            return True
+
         def smart_sleep(duration):
             deadline = time.time() + duration
             while time.time() < deadline:
                 if self.executor.current_task is None or self.executor.exit_event.is_set():
                     return False
+
+                if fidget_is_paused():
+                    time.sleep(0.05)
+                    continue
 
                 check_alt_logic()
                 time.sleep(0.1)
@@ -802,6 +833,10 @@ class BaseDNATask(BaseTask):
                     time.sleep(0.1)
                     continue
 
+                if fidget_is_paused():
+                    time.sleep(0.05)
+                    continue
+
                 check_alt_logic()
 
                 current_drift = perform_mouse_jitter(current_drift)
@@ -820,6 +855,15 @@ class BaseDNATask(BaseTask):
             self.log_debug("fidget action stopped")
 
         self.thread_pool_executor.submit(_fidget_worker)
+
+    def set_fidget_actions_paused(self, paused: bool) -> bool:
+        """临时暂停防挂机线程的鼠标和按键动作，并返回之前的暂停状态。"""
+        params = getattr(self, "fidget_params", None)
+        if not isinstance(params, dict):
+            return False
+        previous = bool(params.get("paused", False))
+        params["paused"] = bool(paused)
+        return previous
 
 track_point_color = {
     "r": (121, 255),  # Red range

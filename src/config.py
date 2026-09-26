@@ -132,6 +132,9 @@ config = {
             "WGC",
             "BitBlt_RenderFull",
         ],  # Windows版本支持的话, 优先使用WGC, 否则使用BitBlt_Full
+        # 修复部分 Unreal 窗口将标题栏包含在 BitBlt 截图中、但仍按客户区坐标接收点击的问题。
+        # 设为 "off" 可回退到 ok-script 原始捕获与坐标行为。
+        "client_area_fix": "auto",
         "check_hdr": False,  # 当用户开启AutoHDR时候提示用户, 但不禁止使用
         "force_no_hdr": False,  # True=当用户开启AutoHDR时候禁止使用
     },
@@ -229,6 +232,7 @@ config = {
         ["src.tasks.trigger.AutoMazeTask", "AutoMazeTask"],
         ["src.tasks.trigger.AutoPickTask", "AutoPickTask"],
         ["src.tasks.trigger.AutoCombatTask", "AutoCombatTask"],
+        ["src.tasks.trigger.AutoLiseUltimateTask", "AutoLiseUltimateTask"],
         ["src.tasks.trigger.AutoMoveTask", "AutoMoveTask"],
         ["src.tasks.trigger.AutoAimTask", "AutoAimTask"],
         ["src.tasks.trigger.AutoRogueDialogTask", "AutoRogueDialogTask"],
