@@ -97,12 +97,19 @@ class AutoLiseUltimateTask(BaseDNATask, TriggerTask):
         )
         return first_ocr_number(texts)
 
-    def _log_status(self, status, message):
-        """只在状态变化时记录，方便实机诊断且不会每帧刷屏。"""
+    def _log_status(self, status, message, info=False):
+        """只在状态变化时记录；只有真正按 Q 才使用普通日志。
+
+        战斗特效会短暂遮住 HUD，单帧 OCR 不可读是预期情况，不应在 GUI
+        里持续显示成用户需要处理的消息。
+        """
         if status == self._last_status:
             return
         self._last_status = status
-        self.log_info(message)
+        if info:
+            self.log_info(message)
+        else:
+            self.log_debug(message)
 
     def run(self):
         now = time.monotonic()
@@ -112,7 +119,6 @@ class AutoLiseUltimateTask(BaseDNATask, TriggerTask):
 
         if not self.scene.in_team(self.in_team_and_world):
             self._confirmations = 0
-            self._last_status = None
             return
 
         q_cost = self._read_hud_number("LISE_Q_COST_OCR")
@@ -142,6 +148,10 @@ class AutoLiseUltimateTask(BaseDNATask, TriggerTask):
 
         self._confirmations = 0
         self._cooldown_until = now + PRESS_COOLDOWN
-        self._log_status("pressed", f"黎瑟 Q 未开启（消耗 {q_cost}），当前能量 {energy}，开启 Q")
+        self._log_status(
+            "pressed",
+            f"黎瑟 Q 未开启（消耗 {q_cost}），当前能量 {energy}，开启 Q",
+            info=True,
+        )
         self.send_key(self.key_config["Ultimate Key"])
         return True

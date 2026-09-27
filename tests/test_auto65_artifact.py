@@ -11,11 +11,16 @@ from src.tasks.fullauto.Auto65ArtifactTask_Fast import Auto65ArtifactTask_Fast
 
 class TestAuto65ArtifactDirectReset(unittest.TestCase):
 
-    def make_task(self, reset_result=True, is_lise=False):
+    def make_task(self, reset_result=True, is_lise=False, is_move=False, is_reset=True):
         task = object.__new__(Auto65ArtifactTask_Fast)
-        task.config = {"是否黎瑟": is_lise}
+        task.config = {
+            "是否移动": is_move,
+            "是否重置角色位置": is_reset,
+            "是否黎瑟": is_lise,
+        }
         task._lise_ultimate_task = None
         task._lise_auto_started = False
+        task.run_recorded_movement = Mock()
         task.reset_and_transport = Mock(return_value=reset_result)
         task.give_up_mission = Mock()
         task.get_ultimate_key = Mock(return_value="q")
@@ -32,6 +37,7 @@ class TestAuto65ArtifactDirectReset(unittest.TestCase):
 
         self.assertTrue(result)
         task.reset_and_transport.assert_called_once_with(verify_in_team=False)
+        task.run_recorded_movement.assert_not_called()
         task.give_up_mission.assert_not_called()
         task.sleep.assert_not_called()
         task.send_key.assert_not_called()
@@ -210,6 +216,119 @@ class TestAuto65ArtifactDirectReset(unittest.TestCase):
 
         self.assertEqual(events, ["reset", "sleep:3", "key:q", "reset_detection", "monitor"])
         self.assertTrue(task._lise_auto_started)
+
+    def test_all_enabled_runs_move_then_reset_then_lise(self):
+        task = self.make_task(reset_result=True, is_lise=True, is_move=True, is_reset=True)
+        events = []
+        monitor = Mock()
+        task._lise_ultimate_task = monitor
+        task.run_recorded_movement.side_effect = lambda **_: events.append("move")
+        task.reset_and_transport.side_effect = lambda **_: events.append("reset") or True
+        task.sleep.side_effect = lambda seconds: events.append(f"sleep:{seconds}")
+        task.send_key.side_effect = lambda key: events.append(f"key:{key}")
+        monitor.reset_detection.side_effect = lambda: events.append("monitor_reset")
+
+        self.assertTrue(task.walk_to_aim(delay=2))
+
+        self.assertEqual(events, ["move", "reset", "sleep:3", "key:q", "monitor_reset"])
+        task.run_recorded_movement.assert_called_once_with(delay=2)
+
+    def test_each_optional_step_can_be_disabled_independently(self):
+        move_only = self.make_task(is_move=True, is_reset=False)
+        self.assertTrue(move_only.walk_to_aim(delay=2))
+        move_only.run_recorded_movement.assert_called_once_with(delay=2)
+        move_only.reset_and_transport.assert_not_called()
+        move_only.send_key.assert_not_called()
+
+        lise_only = self.make_task(is_lise=True, is_move=False, is_reset=False)
+        self.assertTrue(lise_only.walk_to_aim(delay=2))
+        lise_only.run_recorded_movement.assert_not_called()
+        lise_only.reset_and_transport.assert_not_called()
+        lise_only.sleep.assert_called_once_with(3)
+        lise_only.send_key.assert_called_once_with("q")
+
+        no_steps = self.make_task(is_lise=False, is_move=False, is_reset=False)
+        self.assertTrue(no_steps.walk_to_aim(delay=2))
+        no_steps.run_recorded_movement.assert_not_called()
+        no_steps.reset_and_transport.assert_not_called()
+        no_steps.sleep.assert_not_called()
+        no_steps.send_key.assert_not_called()
+
+    def test_immediate_start_only_for_reset_without_movement(self):
+        cases = (
+            ({"是否移动": False, "是否重置角色位置": True}, True),
+            ({"是否移动": True, "是否重置角色位置": True}, False),
+            ({"是否移动": True, "是否重置角色位置": False}, False),
+            ({"是否移动": False, "是否重置角色位置": False}, False),
+        )
+        task = object.__new__(Auto65ArtifactTask_Fast)
+        for config, expected in cases:
+            with self.subTest(config=config):
+                task.config = config
+                self.assertEqual(task.should_start_immediately(), expected)
+
+    def test_recorded_movement_preserves_original_input_sequence(self):
+        task = object.__new__(Auto65ArtifactTask_Fast)
+        events = []
+        task.get_dodge_key = Mock(return_value="shift")
+        task.sleep = Mock(side_effect=lambda seconds: events.append(("sleep", seconds)))
+        task.send_key_down = Mock(side_effect=lambda key: events.append(("down", key)))
+        task.send_key_up = Mock(side_effect=lambda key: events.append(("up", key)))
+        task.send_key = Mock(side_effect=lambda key, **kwargs: events.append(("press", key, kwargs["down_time"])))
+
+        task.run_recorded_movement(delay=2)
+
+        route_end = events.index(("up", "lalt")) + 1
+        self.assertEqual(events[:route_end], [
+            ("down", "lalt"), ("sleep", 2), ("down", "w"),
+            ("sleep", 0.59), ("down", "shift"),
+            ("sleep", 0.22), ("down", "a"),
+            ("sleep", 1.08), ("up", "w"),
+            ("sleep", 1.44), ("down", "w"),
+            ("sleep", 0.09), ("up", "a"),
+            ("sleep", 0.90), ("down", "a"),
+            ("sleep", 0.38), ("up", "shift"),
+            ("sleep", 0.24), ("press", "shift", 0.35),
+            ("sleep", 0.79), ("press", "shift", 0.41),
+            ("sleep", 0.80), ("down", "shift"),
+            ("sleep", 1.27), ("up", "w"),
+            ("sleep", 0.47), ("down", "w"),
+            ("sleep", 0.35), ("up", "w"),
+            ("sleep", 0.79), ("press", "space", 0.09),
+            ("sleep", 2.04), ("press", "s", 0.09),
+            ("sleep", 0.40), ("press", "w", 0.10),
+            ("sleep", 0.44), ("press", "s", 0.10),
+            ("sleep", 4.93), ("up", "shift"),
+            ("sleep", 0.10), ("up", "a"), ("up", "lalt"),
+        ])
+        self.assertEqual(events[route_end:], [
+            ("up", "w"), ("up", "a"), ("up", "s"),
+            ("up", "d"), ("up", "shift"), ("up", "lalt"),
+        ])
+
+    def test_movement_failure_releases_keys_and_skips_later_steps(self):
+        task = self.make_task(is_lise=True, is_move=True, is_reset=True)
+        task.run_recorded_movement.side_effect = RuntimeError("route failed")
+
+        self.assertFalse(task.walk_to_aim(delay=2))
+
+        task.give_up_mission.assert_called_once_with()
+        task.reset_and_transport.assert_not_called()
+        task.send_key.assert_not_called()
+
+    def test_recorded_movement_releases_all_keys_when_input_raises(self):
+        task = object.__new__(Auto65ArtifactTask_Fast)
+        task.get_dodge_key = Mock(return_value="shift")
+        task.sleep = Mock()
+        task.send_key_down = Mock(side_effect=[None, RuntimeError("input failed")])
+        task.send_key_up = Mock()
+        task.send_key = Mock()
+
+        with self.assertRaisesRegex(RuntimeError, "input failed"):
+            task.run_recorded_movement(delay=2)
+
+        released = [call.args[0] for call in task.send_key_up.call_args_list]
+        self.assertEqual(released, ["w", "a", "s", "d", "shift", "lalt"])
 
     def test_lise_monitor_tick_is_gated_and_does_not_enable_trigger(self):
         task = self.make_task(reset_result=True, is_lise=True)

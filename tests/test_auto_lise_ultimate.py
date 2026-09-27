@@ -21,6 +21,7 @@ def make_task(numbers):
     task.key_config = {"Ultimate Key": "q"}
     task.send_key = Mock()
     task.log_info = Mock()
+    task.log_debug = Mock()
     return task
 
 
@@ -111,6 +112,24 @@ class TestAutoLiseUltimate(unittest.TestCase):
         self.assertEqual(task.send_key.call_count, 0)
         self.assertTrue(run_at(task, 2.2))
         self.assertEqual(task.send_key.call_count, 1)
+
+    def test_unreadable_cost_is_only_a_debug_status(self):
+        task = make_task([None])
+
+        run_at(task, 1.0)
+
+        task.send_key.assert_not_called()
+        task.log_info.assert_not_called()
+        task.log_debug.assert_called_once()
+
+    def test_transient_not_in_team_does_not_clear_log_deduplication(self):
+        task = make_task([])
+        task._last_status = "active"
+        task.scene = SimpleNamespace(in_team=lambda _: False)
+
+        run_at(task, 1.0)
+
+        self.assertEqual(task._last_status, "active")
 
     def test_press_cooldown_blocks_immediate_retry(self):
         task = make_task([5, 150, 5, 150, 5, 150, 5, 150])
