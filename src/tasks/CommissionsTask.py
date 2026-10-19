@@ -22,6 +22,9 @@ from src.tasks.config.CommissionConfig import (
     LETTER_REWARD_WAIT_USER,
 )
 from src.tasks.config.CommissionSkillConfig import CommissionSkillConfig
+from src.tasks.trigger.AutoLiseUltimateTask import (
+    AutoLiseUltimateTask, CHECK_INTERVAL, LiseUltimateMixin,
+)
 
 # 「自动前进到开战」的最长时间（秒）：走这么久还没进战斗就放弃重开
 AUTO_ADVANCE_TIME_OUT = 20
@@ -61,7 +64,9 @@ class Mission(Enum):
     GIVE_UP = 4
 
 
-class CommissionsTask(BaseDNATask):
+class CommissionsTask(LiseUltimateMixin, BaseDNATask):
+
+    auto_advance_timeout = AUTO_ADVANCE_TIME_OUT
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -163,7 +168,7 @@ class CommissionsTask(BaseDNATask):
         """
         self.send_key_down("w")
         try:
-            deadline = time.time() + AUTO_ADVANCE_TIME_OUT
+            deadline = time.time() + self.auto_advance_timeout
             while time.time() < deadline:
                 self.next_frame()
                 if self.is_in_combat():
@@ -173,17 +178,18 @@ class CommissionsTask(BaseDNATask):
                     while time.time() < extra_deadline:
                         self.next_frame()
                     return True
-            return self.advance_failed()
         finally:
             self.send_key_up("w")
+        # Menu handling may wait for several UI transitions; never hold W there.
+        return self.advance_failed()
 
     def advance_failed(self):
-        """「自动前进到开战」走满 AUTO_ADVANCE_TIME_OUT 秒还没进战斗。
+        """「自动前进到开战」走满当前任务的前进超时还没进战斗。
 
         默认按委托的处理：放弃这次副本（返回 False）。
         没有「放弃挑战」按钮的模式（沉浸式戏剧）自己覆盖这个方法。
         """
-        self.log_info(f"前进 {AUTO_ADVANCE_TIME_OUT} 秒仍未进入战斗，重开任务")
+        self.log_info(f"前进 {self.auto_advance_timeout} 秒仍未进入战斗，重开任务")
         self.give_up_mission()
         return False
 
@@ -418,8 +424,12 @@ class CommissionsTask(BaseDNATask):
 
     def give_up_mission(self, timeout=0):
         def is_mission_start_iface():
-            return self.find_start_interface() or self.find_action_dialog_continue() or self.find_esc_menu()
+            return (self.find_result_again_btn() or self.find_manual_select_btn()
+                    or self.find_letter_interface() or self.find_start_interface()
+                    or self.find_action_dialog_continue() or self.find_esc_menu())
 
+        # A retry starts a fresh mission, even if the last dialog was CONTINUE.
+        self.mission_status = None
         self.exit_mission(timeout=timeout)
         self.wait_until(condition=is_mission_start_iface, time_out=60, raise_if_not_found=False)
 
@@ -623,13 +633,28 @@ class CommissionsTask(BaseDNATask):
         self.sleep(0.1)
         self.wait_until(lambda: not self.in_team(), time_out=3, settle_time=0.5)
 
+    def tick_enabled_lise_ultimate(self):
+        """Poll once for either global slots or the enabled real-time switch."""
+        if any(self.commission_skill_config.get(f"技能{n}") == "自动黎瑟终结技"
+               for n in range(1, 5)):
+            return self.check_lise_ultimate()
+        trigger = self.get_task_by_class(AutoLiseUltimateTask)
+        if trigger is not None and trigger.enabled:
+            return self.check_lise_ultimate()
+
     def create_skill_ticker(self):
-        skills = []
+        skills = [self.create_ticker(
+            self.tick_enabled_lise_ultimate,
+            interval=CHECK_INTERVAL,
+            interval_random_range=(1.0, 1.0),
+        )]
         def create_ticker(local_n):
             def action():
                 self.log_onetime_info("全局技能设定: " + str(self.commission_skill_config), "全局技能设定")
                 skill = self.commission_skill_config.get(f"技能{local_n}", "不使用")
-                if skill == "不使用":
+                # Lise uses the shared 0.35s monitor above: slot intervals (5s by
+                # default) exceed its confirmation window, and must not delay it.
+                if skill in ("不使用", "自动黎瑟终结技"):
                     return
                 after_sleep = self.commission_skill_config.get(f"技能{local_n}_释放后等待", 0.0)
                 if skill == "战技":

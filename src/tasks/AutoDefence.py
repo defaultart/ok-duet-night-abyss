@@ -1,16 +1,53 @@
 from qfluentwidgets import FluentIcon
 import time
+import re
 from typing import Callable
+from typing import NamedTuple
+
+import cv2
 
 from ok import Logger, TaskDisabledException
 from src.tasks.DNAOneTimeTask import DNAOneTimeTask
 from src.tasks.BaseCombatTask import BaseCombatTask
+from src.tasks.BaseDNATask import isolate_white_text_to_black
 from src.tasks.CommissionsTask import CommissionsTask, Mission, QuickAssistTask, _default_movement
 
 logger = Logger.get_logger(__name__)
 
 
+class DefenceHudReading(NamedTuple):
+    round_number: int | None
+    wave_number: int | None
+
+
+def normalize_defence_round(image):
+    return cv2.resize(image, None, fx=3, fy=3, interpolation=cv2.INTER_CUBIC)
+
+
+def normalize_defence_wave(image):
+    return normalize_defence_round(isolate_white_text_to_black(image))
+
+
+def parse_defence_round(texts):
+    for text in texts or ():
+        match = re.fullmatch(r"(?:(?:当前)?轮次\s*[:：]?\s*)?(\d+)", text.name.strip())
+        if match and (number := int(match.group(1))) > 0:
+            return number
+    return None
+
+
+def parse_defence_wave(texts):
+    for text in texts or ():
+        for match in re.finditer(r"(?<!\d)(\d+)\s*[/／]\s*(\d+)(?!\d)", text.name):
+            current, total = map(int, match.groups())
+            if total > 0 and 0 <= current <= total:
+                return current
+    return None
+
+
 class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
+
+    auto_advance_timeout = 10
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -133,6 +170,8 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
         self.init_for_next_round()
         self.skill_tick.reset()
         self.current_round = 0
+        if self.external_movement is _default_movement:
+            self.info_set("当前轮次", 0)
         self._mission_started = False
 
     def init_for_next_round(self):
@@ -141,6 +180,65 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
     def init_runtime_state(self):
         self.runtime_state = {"wave_start_time": 0, "wave": -1, "wait_next_wave": False}
         self.reset_wave_info()
+
+    def reset_wave_info(self):
+        pending = getattr(self, "_defence_hud_future", None)
+        if pending is not None:
+            pending.cancel()
+        self._defence_hud_future = None
+        super().reset_wave_info()
+
+    def _read_defence_hud(self, frame, round_box, wave_box):
+        # Both reads belong to the same captured frame; worker only returns data.
+        rounds = self.ocr(frame=frame, box=round_box, frame_processor=normalize_defence_round,
+                          match=re.compile(r"\d+"), name="defence_hud_round")
+        waves = self.ocr(frame=frame, box=wave_box, frame_processor=normalize_defence_wave,
+                         match=re.compile(r"\d+\s*[/／]\s*\d+"), name="defence_hud_wave")
+        return DefenceHudReading(parse_defence_round(rounds), parse_defence_wave(waves))
+
+    def _update_defence_round(self, number):
+        if number is not None and number > self.current_round:
+            self.current_round = number
+            self.info_set("当前轮次", number)
+
+    def get_wave_info(self):
+        if self.external_movement is not _default_movement:
+            return super().get_wave_info()
+        if not self.in_team():
+            return
+        pending = getattr(self, "_defence_hud_future", None)
+        if pending is not None:
+            if pending.done():
+                self._defence_hud_future = None
+                try:
+                    reading = pending.result()
+                except Exception as error:
+                    self.log_debug(f"自动扼守 HUD OCR 本帧失败，保留已确认统计：{error}")
+                    return
+                if reading.round_number is not None and reading.round_number < self.current_round:
+                    return
+                self._update_defence_round(reading.round_number)
+                if reading.wave_number is not None and reading.wave_number != self.current_wave:
+                    self.current_wave = reading.wave_number
+                    self.info_set("当前波次", self.current_wave)
+            return
+        round_box = self.screen_box("DEFENCE_HUD_ROUND_OCR")
+        wave_box = self.screen_box("DEFENCE_HUD_WAVE_OCR")
+        frame = self.frame.copy()
+        self._defence_hud_future = self.thread_pool_executor.submit(
+            self._read_defence_hud, frame, round_box, wave_box)
+
+    def get_round_info(self):
+        if self.external_movement is not _default_movement:
+            return super().get_round_info()
+        # HUD statistics are read asynchronously above; completion dialogs have
+        # their own number position, unrelated to the left-hand HUD.
+        if self.in_team() or not (self.find_action_dialog_continue() or self.find_action_dialog_retreat()):
+            return
+        texts = self.ocr(box=self.screen_box("DEFENCE_DIALOG_ROUND_OCR"),
+                         frame_processor=normalize_defence_round, match=re.compile(r"\d+"),
+                         name="defence_completed_round")
+        self._update_defence_round(parse_defence_round(texts))
 
     def handle_in_mission(self):
         """处理在副本中的逻辑"""

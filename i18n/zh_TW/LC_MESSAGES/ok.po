@@ -611,3 +611,8 @@ msgstr "打幾次"
 
 msgid "打几次，0 = 无限循环"
 msgstr "打幾次，0 = 無限循環"
+
+
+#: src/tasks/config/CommissionSkillConfig.py
+msgid "自动黎瑟终结技"
+msgstr "自動黎瑟終結技"

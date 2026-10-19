@@ -234,8 +234,23 @@ def _install_runtime_classes(bitblt_class, post_message_class, hwnd_window_class
     setattr(bitblt_class, _PATCH_MARKER, True)
 
 
+def install_printwindow_handle_fix() -> None:
+    """Let BitBlt_RenderFull pass 64-bit device-context handles to PrintWindow.
+
+    ``ctypes.windll`` converts undeclared arguments as 32-bit ints. A device
+    context that does not fit raises ``argument 2: OverflowError`` inside
+    ``capture_by_bitblt``. The cleanup that follows can access-violate and
+    take the process down. ok calls this same function object, so setting
+    ``argtypes`` once covers the main window and composited children.
+    """
+    function = ctypes.windll.user32.PrintWindow
+    function.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint]
+    function.restype = ctypes.c_int
+
+
 def install_client_area_fix(app_config: dict) -> bool:
     """Install the project-local BitBlt/client-coordinate compatibility fix."""
+    install_printwindow_handle_fix()
     windows_config = app_config.get("windows", {}) if isinstance(app_config, dict) else {}
     mode = windows_config.get("client_area_fix", "auto")
     if mode == "off":

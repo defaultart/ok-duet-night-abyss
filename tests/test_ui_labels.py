@@ -503,7 +503,7 @@ class TestUiLabels(TaskTestCase):
             self.assertEqual(events[-1], 'w up', '不管成功失败都要松开 w')
 
             events, result = run_case('自动前进到开战', combat_at=9999)
-            self.assertEqual(movement(events), ['w down', 'give_up', 'w up'],
+            self.assertEqual(movement(events), ['w down', 'w up', 'give_up'],
                              '一直不进战斗就该走满超时并放弃重开')
             self.assertNotIn('combat', events, '走满超时说明判据一次都没命中')
             self.assertFalse(result, '放弃重开后调用方不该继续跑局内逻辑')

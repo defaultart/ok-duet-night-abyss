@@ -104,6 +104,7 @@ def make_bottom_right_black(frame):  # 可选. 某些游戏截图时遮挡UID使
 
 config = {
     "custom_tasks": True,  # enable creating and editing custom tasks
+    "custom_tabs": [["src.dna_ui.KeyboardRoutesTab", "KeyboardRoutesTab"]],
     "debug": False,  # Optional, default: False
     "use_gui": True,  # 目前只支持True
     "config_folder": "configs",  # 最好不要修改
@@ -208,6 +209,7 @@ config = {
         "Globals",
     ],  # 全局单例对象, 可以存放加载的模型, 使用og.my_app调用
     "onetime_tasks": [  # tasks to execute
+        ["src.tasks.KeyboardRouteTask", "KeyboardRouteTask"],
         ["src.tasks.config.CommissionConfig", "CommissionConfig"],
         ["src.tasks.config.CommissionSkillConfig", "CommissionSkillConfig"],
         ["src.tasks.fullauto.AutoFishTask", "AutoFishTask"],
@@ -223,6 +225,9 @@ config = {
         ["src.tasks.AutoGeneral", "AutoGeneral"],
         ["src.tasks.AutoExpulsion", "AutoExpulsion"],
         ["src.tasks.AutoDefence", "AutoDefence"],
+        ["src.tasks.AutoWeaponAscensionTask", "AutoWeaponAscensionTask"],
+        ["src.tasks.AutoWeaponExp60Task", "AutoWeaponExp60Task"],
+        ["src.tasks.AutoWeaponExp60RecordedTask", "AutoWeaponExp60RecordedTask"],
         ["src.tasks.AutoExploration", "AutoExploration"],
         ["src.tasks.AutoExcavation", "AutoExcavation"],
         ["src.tasks.AutoHedge", "AutoHedge"],

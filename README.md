@@ -48,6 +48,7 @@ All issues and consequences arising from the use of this software are not relate
     *   自动连战
     *   兼容外部移动逻辑 (Mod)
 *   **自动钓鱼** (核心逻辑原作者: B站 @无敌大蜜瓜)
+*   **[键盘路线录制与回放](docs/keyboard-routes.md)**：多地图移动路线、OCR/截图检查节点，避险副本失败退出重试
 *   **快速移动**
     *   自动穿引共鸣
 *   **自动花序弓蓄力**
@@ -121,6 +122,8 @@ All issues and consequences arising from the use of this software are not relate
 
 1.  进入您想要自动化的关卡或场景。
 2.  在程序界面上点击 **“开始”** 按钮即可。
+
+**自动武器突破材料60级**：在游戏的“调停”选择界面启动“半自动”分组下的同名任务。任务保留当前选择的等级，沿用委托手册配置，自动操作引信、托管黎瑟 Q 并移动撤离；失败会放弃重试，结算后点击“再次进行”，持续运行直到手动停止。无需提前开启“黎瑟 Q 自动开启”实时任务。请使用能完成该关卡的黎瑟配置及默认游戏 UI 缩放。
 
 ### 三、 安装外部逻辑 (Mod)
 

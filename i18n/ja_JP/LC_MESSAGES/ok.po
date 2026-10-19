@@ -611,3 +611,8 @@ msgstr "回数"
 
 msgid "打几次，0 = 无限循环"
 msgstr "何回挑戦するか、0 = 無限ループ"
+
+
+#: src/tasks/config/CommissionSkillConfig.py
+msgid "自动黎瑟终结技"
+msgstr "リーゼ終結スキル自動発動"

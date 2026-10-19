@@ -1,3 +1,4 @@
+import ctypes
 import unittest
 from unittest.mock import patch
 
@@ -5,6 +6,28 @@ import numpy as np
 
 from src.compat import window_client_area as client_area
 from src.compat.window_client_area import ClientAreaTransform
+
+
+class TestPrintWindowHandles(unittest.TestCase):
+    def test_hdc_above_32bit_passes_argument_conversion(self):
+        hdc = 2**32 + 7
+        raw = ctypes.WinDLL('user32', use_last_error=True).PrintWindow
+        with self.assertRaises(ctypes.ArgumentError) as caught:
+            raw(0, hdc, 0)
+        self.assertIn('argument 2', str(caught.exception))
+
+        client_area.install_printwindow_handle_fix()
+        function = ctypes.windll.user32.PrintWindow
+        self.assertIs(function.argtypes[1], ctypes.c_void_p)
+        seen = {}
+
+        @ctypes.WINFUNCTYPE(ctypes.c_int, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_uint)
+        def receiver(hwnd, received, flags):
+            seen['hdc'] = received
+            return 1
+
+        receiver(0, hdc, 2)
+        self.assertEqual(seen['hdc'], hdc)
 
 
 class TestClientAreaTransform(unittest.TestCase):

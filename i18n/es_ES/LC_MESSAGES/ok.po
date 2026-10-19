@@ -611,3 +611,8 @@ msgstr "Repeticiones"
 
 msgid "打几次，0 = 无限循环"
 msgstr "Cuántas veces repetir, 0 = infinito"
+
+
+#: src/tasks/config/CommissionSkillConfig.py
+msgid "自动黎瑟终结技"
+msgstr "Definitiva automática de Lise"
