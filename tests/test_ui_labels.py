@@ -1,6 +1,11 @@
 # 界面判据模板匹配测试
 import re
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+import cv2
 
 import src.tasks.CommissionsTask as commissions_module
 from src.config import config
@@ -10,6 +15,7 @@ from src.tasks.CommissionsTask import (CommissionsTask, _default_movement,
                                        normalize_ocr_scale, reset_action_box_for_row)
 from src.tasks.config.CommissionConfig import LETTER_HANDLE_AUTO_SELECT_FIRST
 from src.dna_ui.Defs import COORD, DISCRIMINATORS, REWARD_COUNT_BOX, REWARD_SELECTED_BOX
+from src.compat.window_client_area import ClientAreaTransform
 from tests.support.task_helpers import check_image
 
 IMAGES = 'tests/images/'
@@ -375,41 +381,58 @@ class TestUiLabels(TaskTestCase):
         self.assertEqual(calls, [COORD.START_SCREEN_BTN],
                          '只应点一次开始按钮，不该反复点，实际: %s' % (calls,))
 
-    # ---- 自动选择密函：走的是不依赖检测的固定区域 + 固定坐标 ----
+    # ---- 密函选择页只确认当前选择 ----
 
-    def test_choose_letter_auto_select_clicks_slot_once(self):
-        """「自动选择第一个」分支必须真的点到第一个密函格和确认按钮。
+    def test_letter_pages_are_recognized_after_scrolling_at_all_sizes(self):
+        samples = (
+            'letter_select_from_start.png', 'letter_select_from_ingame.png',
+            'letter_select_after_result.png', 'letter_select_second_layout.png',
+            'letter_select_single_confirm.png', 'letter_select_scrolled_bottom.png',
+            'letter_select_mouse_confirm.png',
+            'letter_select_mouse_confirm.png',
+        )
+        with TemporaryDirectory() as folder:
+            for image in samples:
+                raw = cv2.imread(IMAGES + image)
+                for top in (0, 30):
+                    normalized = ClientAreaTransform(raw.shape[1], raw.shape[0], top=top).normalize_frame(raw)
+                    for width, height in ((1280, 720), (1600, 900), (1920, 1080)):
+                        with self.subTest(image=image, top=top, size=(width, height)):
+                            path = str(Path(folder) / 'letter.png')
+                            cv2.imwrite(path, cv2.resize(normalized, (width, height)))
+                            self.set_image(path)
+                            self.assertTrue(self.task.find_letter_interface())
+                            # Common interior shared by all measured confirmation buttons.
+                            transform = ClientAreaTransform(raw.shape[1], raw.shape[0], top=top)
+                            x0, y0 = transform.raw_to_normalized(1160, 576)
+                            x1, y1 = transform.raw_to_normalized(1285, 600)
+                            with patch.object(self.task, 'click_box_random') as click:
+                                self.task.click_ui_coord(COORD.LETTER_CONFIRM, use_safe_move=False)
+                            box = click.call_args.args[0]
+                            self.assertGreater(box.x, x0 * width / raw.shape[1])
+                            self.assertLess(box.x + box.width, x1 * width / raw.shape[1])
+                            self.assertGreater(box.y, y0 * height / raw.shape[0])
+                            self.assertLess(box.y + box.height, y1 * height / raw.shape[0])
+                            self.assertFalse(click.call_args.kwargs['use_safe_move'])
 
-        这个分支平时跑不到（默认配置是「直接开始」），踩过两个坑：
-        调用了一个已被删除的点击方法（AttributeError，无人发现）；
-        以及把点击框写成了 ⊘「不使用」那格的位置，等于主动选择"不用密函"。
-        """
-        # 先钉死"被调用的方法真的存在"——第一个坑就是漏了这一层
-        for method in ('click_ui_area', 'click_ui_coord', 'click_box_random', 'screen_box'):
-            self.assertTrue(callable(getattr(self.task, method, None)),
-                            'CommissionsTask 缺少 %s' % method)
-        # 第二个坑：点击框必须在 ⊘ 判据的**右边**，不能压在它身上
-        not_use = DISCRIMINATORS['letter_select_not_use'][0]
-        self.assertGreater(COORD.LETTER_FIRST[0], not_use[2],
-                           'LETTER_FIRST %s 不在 ⊘ 判据 %s 右侧' % (COORD.LETTER_FIRST, not_use))
+    def test_choose_letter_legacy_auto_select_only_clicks_confirm(self):
+        """即便仍保存旧版自动选卡配置，也不改动当前选中的密函。"""
         task = self.task
         original = (type(task).commission_config, task.click_ui_area, task.click_ui_coord,
-                    task.find_letter_interface)
+                    task.find_letter_interface, task.send_key)
         clicks = []
         type(task).commission_config = {'自动处理密函': LETTER_HANDLE_AUTO_SELECT_FIRST}
         task.mission_status = None
         task.click_ui_area = lambda area, **kw: clicks.append(('area', area))
         task.click_ui_coord = lambda coord, **kw: clicks.append(('coord', coord))
-        task.find_letter_interface = lambda *a, **kw: len(clicks) < 2
+        task.send_key = lambda key: clicks.append(('key', key))
+        task.find_letter_interface = lambda *a, **kw: len(clicks) < 1
         try:
             task.choose_letter(timeout=2)
         finally:
             (type(task).commission_config, task.click_ui_area, task.click_ui_coord,
-             task.find_letter_interface) = original
-        self.assertEqual([c[0] for c in clicks], ['area', 'coord'],
-                         '应点一次密函格、再点一次确认，实际: %s' % (clicks,))
-        self.assertEqual(clicks[0][1], COORD.LETTER_FIRST)
-        self.assertEqual(clicks[1][1], COORD.LETTER_CONFIRM, '局外布局应点局外确认坐标')
+             task.find_letter_interface, task.send_key) = original
+        self.assertEqual(clicks, [('coord', COORD.LETTER_CONFIRM)], '只应点击一次确认选择')
 
     # ---- 对照：不该命中的场景 ----
 

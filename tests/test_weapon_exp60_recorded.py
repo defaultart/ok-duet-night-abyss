@@ -16,7 +16,7 @@ from src.routes.weapon_exp60_t01 import T01_DURATION, T01_EVENTS, T01_GATE_CHECK
 from src.tasks.AutoWeaponExp60RecordedTask import (
     AutoWeaponExp60RecordedTask, ROUTE_KEYS, build_t01_schedule,
 )
-from src.tasks.AutoWeaponExp60Task import AutoWeaponExp60Task
+from src.tasks.CommissionsTask import CommissionsTask
 
 
 MODULE = 'src.tasks.AutoWeaponExp60RecordedTask'
@@ -26,6 +26,19 @@ class TestRecordedResultScreen(TaskTestCase):
     task_class = AutoWeaponExp60RecordedTask
     config = dict(config)
 
+    def test_start_interface_with_and_without_caption(self):
+        screenshot = str(Path(__file__).parent / 'images/weapon_exp60_start.png')
+        for caption in (0, 30):
+            with self.subTest(caption=caption):
+                self.set_image(screenshot)
+                frame = self.task.frame
+                self.task.executor._frame = ClientAreaTransform(
+                    frame.shape[1], frame.shape[0], top=caption).normalize_frame(frame)
+                self.assertTrue(self.task.find_start_interface())
+                self.assertFalse(self.task.find_manual_select_btn())
+                self.assertFalse(self.task.find_result_again_btn())
+                self.assertFalse(self.task.in_team())
+
     def test_user_result_screenshot_with_icon_missing_and_caption_normalized(self):
         screenshot = str(Path(__file__).parent / 'images/weapon_exp60_result_again.png')
         for caption in (0, 30):
@@ -34,7 +47,7 @@ class TestRecordedResultScreen(TaskTestCase):
                 frame = self.task.frame
                 self.task.executor._frame = ClientAreaTransform(
                     frame.shape[1], frame.shape[0], top=caption).normalize_frame(frame)
-                with patch.object(AutoWeaponExp60Task, 'find_result_again_btn', return_value=None):
+                with patch.object(CommissionsTask, 'find_result_again_btn', return_value=None):
                     self.assertTrue(self.task.find_result_again_btn())
 
 
@@ -121,8 +134,6 @@ class TestRecordedWeaponExpFlow(unittest.TestCase):
         task.next_frame = Mock()
         task.find_result_again_btn = Mock(return_value=False)
         task.check_lise_ultimate = Mock()
-        task.sprint = Mock()
-        task.jump_five_times = Mock()
         task.send_key_down = lambda key: self.send(key, True)
         task.send_key_up = lambda key: self.send(key, False)
         task.sleep = self.advance
@@ -141,10 +152,10 @@ class TestRecordedWeaponExpFlow(unittest.TestCase):
         else:
             self.held.discard(key)
 
-    def test_registration_and_existing_task_remain(self):
+    def test_only_recorded_weapon_exp_task_is_registered(self):
         self.assertIn([MODULE, 'AutoWeaponExp60RecordedTask'], config['onetime_tasks'])
-        self.assertIn(['src.tasks.AutoWeaponExp60Task', 'AutoWeaponExp60Task'],
-                      config['onetime_tasks'])
+        self.assertNotIn(['src.tasks.AutoWeaponExp60Task', 'AutoWeaponExp60Task'],
+                         config['onetime_tasks'])
 
     def test_checks_fresh_result_after_complete_route_and_releases(self):
         def fresh_frame():
@@ -159,8 +170,6 @@ class TestRecordedWeaponExpFlow(unittest.TestCase):
         self.task.next_frame.assert_called_once()
         self.task.find_result_again_btn.assert_called_once()
         self.task.check_lise_ultimate.assert_not_called()
-        self.task.sprint.assert_not_called()
-        self.task.jump_five_times.assert_not_called()
         self.task.check_gate_checkpoint.assert_called_once()
         self.assertEqual(self.task.success_count, 1)
         self.assertEqual(self.task.failure_count, 0)
@@ -347,7 +356,7 @@ class TestRecordedWeaponExpFlow(unittest.TestCase):
                 task.success_count = 5
                 task.failure_count = 4
                 task.gate_failure_count = 3
-                with patch('src.tasks.AutoWeaponExp60Task.DNAOneTimeTask.run'):
+                with patch(f'{MODULE}.DNAOneTimeTask.run'):
                     if error is RuntimeError:
                         with self.assertRaises(error):
                             task.run()
@@ -383,6 +392,24 @@ class TestRecordedRecovery(unittest.TestCase):
     def advance(self, seconds):
         self.now += seconds
 
+    def test_confirmation_preserves_the_current_commission_selection(self):
+        task = self.task
+        page = {'manual': True}
+        task.find_manual_select_btn.side_effect = lambda: page['manual']
+        task.choose_drop_rate_item = Mock()
+        task.click_ui_coord.side_effect = lambda *args, **kwargs: page.update(manual=False)
+
+        def wait(condition, post_action, **kwargs):
+            self.assertFalse(condition())
+            post_action()
+            self.assertTrue(condition())
+
+        task.wait_until = wait
+        task.confirm_start()
+        task.click_ui_coord.assert_called_once_with(
+            COORD.MANUAL_CONFIRM, name='weapon_exp_start', after_sleep=0.25)
+        task.choose_drop_rate_item.assert_not_called()
+
     def test_ocr_fallback_requires_both_buttons_and_accepts_split_words(self):
         task = self.task
         del task.find_result_again_btn
@@ -390,7 +417,7 @@ class TestRecordedRecovery(unittest.TestCase):
         task.box_of_screen_scaled = Mock(return_value=box)
         task.ocr = Mock(return_value=[SimpleNamespace(name=name)
                                      for name in ('再次', '进行', '退出 委托')])
-        with patch.object(AutoWeaponExp60Task, 'find_result_again_btn', return_value=None):
+        with patch.object(CommissionsTask, 'find_result_again_btn', return_value=None):
             self.assertIs(task.find_result_again_btn(), box)
             task.ocr.return_value = [SimpleNamespace(name='再次进行')]
             self.assertIsNone(task.find_result_again_btn())

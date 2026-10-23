@@ -36,9 +36,9 @@ sensitivity_config_option = ConfigOption(
 afk_config_option = ConfigOption(
     "挂机设置",
     {  # 全局配置示例
-        "提示音": True,
+        "提示音": False,
         "提示音次数": 2,
-        "弹出通知": True,
+        "弹出通知": False,
         "防止鼠标干扰": True,
         "鼠标抖动": True,
         "鼠标抖动锁定在窗口范围": True,
@@ -226,7 +226,6 @@ config = {
         ["src.tasks.AutoExpulsion", "AutoExpulsion"],
         ["src.tasks.AutoDefence", "AutoDefence"],
         ["src.tasks.AutoWeaponAscensionTask", "AutoWeaponAscensionTask"],
-        ["src.tasks.AutoWeaponExp60Task", "AutoWeaponExp60Task"],
         ["src.tasks.AutoWeaponExp60RecordedTask", "AutoWeaponExp60RecordedTask"],
         ["src.tasks.AutoExploration", "AutoExploration"],
         ["src.tasks.AutoExcavation", "AutoExcavation"],

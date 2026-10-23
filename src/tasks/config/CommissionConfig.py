@@ -10,7 +10,6 @@ LETTER_HANDLE_START_DIRECTLY = "直接开始"
 LETTER_HANDLE_WAIT_USER = "等待用户选择"
 
 LETTER_HANDLE_MODES = [
-    LETTER_HANDLE_AUTO_SELECT_FIRST,
     LETTER_HANDLE_START_DIRECTLY,
     LETTER_HANDLE_WAIT_USER,
 ]
@@ -32,7 +31,7 @@ LETTER_REWARD_PREFERENCES = [
 default_config = {
     "委托手册": "不使用",
     "委托手册指定轮次": "",
-    "自动处理密函": LETTER_HANDLE_AUTO_SELECT_FIRST,
+    "自动处理密函": LETTER_HANDLE_START_DIRECTLY,
     "密函奖励偏好": LETTER_REWARD_DEFAULT,
     "自动穿引共鸣": True,
     "自动花弓": True,
@@ -40,7 +39,7 @@ default_config = {
 
 config_description = {
     "委托手册指定轮次": "范例: 3,5,8",
-    "自动处理密函": "密函处理方式：自动选择第一个密函 / 直接开始 / 等待用户选择",
+    "自动处理密函": "直接开始仅确认当前选择，不点击密函卡片；也可等待用户选择",
     "密函奖励偏好": "密函奖励选择策略：默认选择 / 持有数为0 / 持有数最少 / 持有数最多 / 等待用户选择",
     "自动穿引共鸣": "在需要时启用触发任务的自动穿引共鸣",
     "自动花弓": "在需要时启用触发任务的自动花弓",
@@ -78,14 +77,15 @@ class CommissionConfig(BaseDNATask):
         if isinstance(getattr(self, "config", None), dict):
             # 兼容升级
             # 1) 「自动处理密函」旧版为 bool：
-            #    True -> 自动选择第一个密函；False -> 等待用户选择。
+            #    True / 旧「自动选择第一个密函」 -> 直接开始；False -> 等待用户选择。
             # 2) 「密函奖励偏好」旧版使用「不使用」表示默认行为：
             #    不使用 -> 默认选择。
             mode = self.config.get("自动处理密函", default_config["自动处理密函"])
             mode_options = config_type["自动处理密函"]["options"]
             if mode not in mode_options:
                 mode_compat_map = {
-                    True: LETTER_HANDLE_AUTO_SELECT_FIRST,
+                    True: LETTER_HANDLE_START_DIRECTLY,
+                    LETTER_HANDLE_AUTO_SELECT_FIRST: LETTER_HANDLE_START_DIRECTLY,
                     False: LETTER_HANDLE_WAIT_USER,
                 }
                 mode = mode_compat_map.get(mode, mode)

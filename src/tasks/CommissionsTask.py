@@ -88,10 +88,10 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         return self.get_task_by_class(CommissionSkillConfig).config
 
     def get_letter_handle_mode(self):
-        mode = self.commission_config.get("自动处理密函", LETTER_HANDLE_AUTO_SELECT_FIRST)
+        mode = self.commission_config.get("自动处理密函", LETTER_HANDLE_START_DIRECTLY)
         if mode in LETTER_HANDLE_MODES:
             return mode
-        return LETTER_HANDLE_AUTO_SELECT_FIRST
+        return LETTER_HANDLE_START_DIRECTLY
 
     def setup_commission_config(self):
         self.default_config.update({
@@ -492,13 +492,14 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         self.sleep(0.25)
 
     def choose_letter(self, timeout=0):
-        """点「⊘ 不使用」-> 点确认 -> 等密函界面消失。
+        previous_pause = self.set_fidget_actions_paused(True)
+        try:
+            return self._choose_letter_once(timeout)
+        finally:
+            self.set_fidget_actions_paused(previous_pause)
 
-        1) ⊘ 槽选中后外观不变，所以点一次就往下走，不拿"模板还在不在"当成功凭证。
-        2) 确认按钮不做模板匹配（实拍帧上芯片只有 0.76，过不了 0.8 阈值），
-           两套布局用 mission_status 区分，点击用 COORD 固定坐标。
-        3) 「[Esc] 放弃」不标注、不匹配 —— 它与确认按钮同排相邻，照检测框点就是点放弃。
-        """
+    def _choose_letter_once(self, timeout=0):
+        """保留当前密函选择，自动模式只点击一次确认选择。"""
         if not hasattr(self, "config"):
             return
         action_timeout = self.action_timeout if timeout == 0 else timeout
@@ -512,31 +513,23 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
                 raise_if_not_found=True,
             )
             return
-        if mode in (LETTER_HANDLE_AUTO_SELECT_FIRST, LETTER_HANDLE_START_DIRECTLY) and self.find_letter_interface():
-            drag_box = self.screen_box('LETTER_DRAG_AREA')
+        if mode in (LETTER_HANDLE_AUTO_SELECT_FIRST, LETTER_HANDLE_START_DIRECTLY):
+            return self._confirm_letter_once(action_timeout)
 
-            if mode == LETTER_HANDLE_AUTO_SELECT_FIRST:
-                # 点第 2 格（第一个可选密函）；第 1 格是 ⊘ 不使用，点了等于不用密函
-                self.sleep(0.1)
-                self.click_ui_area(COORD.LETTER_FIRST, name="letter_first_slot",
-                                   after_sleep=0.3, use_safe_move=True, safe_move_box=drag_box)
-
-            # 确认按钮直接点固定坐标：局内继续轮次是 x1108，其余是 x1292
-            def click_confirm():
-                if self.mission_status == Mission.CONTINUE:
-                    coord, name = COORD.LETTER_INGAME_CONFIRM, "letter_confirm_ingame"
-                else:
-                    coord, name = COORD.LETTER_CONFIRM, "letter_confirm_outgame"
-                self.click_ui_coord(coord, name=name, after_sleep=1,
-                                    use_safe_move=True, safe_move_box=drag_box)
-
-            # 点是手段，"密函界面消失"才算过
-            self.wait_until(
-                condition=lambda: not self.find_letter_interface(),
-                post_action=click_confirm,
-                time_out=action_timeout,
-                raise_if_not_found=True,
-            )
+    def _confirm_letter_once(self, timeout=0):
+        """暂停防挂机，只移动到确认按钮并单击，随后只观察，不恢复鼠标位置。"""
+        previous_pause = self.set_fidget_actions_paused(True)
+        try:
+            if not self.find_letter_interface():
+                return
+            self.click_ui_coord(COORD.LETTER_CONFIRM, name="letter_confirm", use_safe_move=False)
+            if not self.wait_until(lambda: not self.find_letter_interface(),
+                                   time_out=timeout or self.action_timeout,
+                                   settle_time=0, raise_if_not_found=False):
+                self.log_info("密函确认后界面未关闭，停止任务以避免重复点击")
+                raise TaskDisabledException()
+        finally:
+            self.set_fidget_actions_paused(previous_pause)
 
     def read_reward_counts(self, attempt=3):
         """读三个奖励的持有数，返回 [卡1, 卡2, 卡3]。
@@ -927,13 +920,14 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         return second
 
     def find_letter_interface(self):
-        """密函选择弹窗（局外/局内两套布局都算）—— 只用「⊘ 不使用」图标。
-
-        它在两套布局里位置完全相同，对云游戏画面变糊也最鲁棒（实拍帧 0.9443）。
-        底下的 [Esc] 放弃 / [Space] 确认选择不标注：前者会诱导代码点到"放弃"，
-        后者实拍帧只有 0.7610（过不了 0.8）；"在哪套布局"由 mission_status 判。
-        """
-        return self.find_letter_select_not_use()
+        """优先用图标判据；列表滚动导致图标变化时，用固定标题补充识别。"""
+        if found := self.find_letter_select_not_use():
+            return found
+        scale = max(1.0, 2.0 * 1600 / self.width)
+        titles = self.ocr(box=self.screen_box('LETTER_TITLE_OCR'),
+                          frame_processor=lambda image: normalize_ocr_scale(image, scale),
+                          name="letter_title")
+        return any(re.sub(r"\s+", "", text.name) == "选择密函" for text in titles or ())
 
 
 class QuickAssistTask:

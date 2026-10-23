@@ -402,17 +402,21 @@ class TestAuto65ArtifactRoundLimit(unittest.TestCase):
                 task = self.make_defence(limit=value)
                 self.assertEqual(task.external_round_limit(), 10)
 
-    def test_normal_auto_defence_keeps_original_round_logic(self):
+    def test_normal_auto_defence_uses_actual_completions_instead_of_hud(self):
         task = self.make_defence(limit=10)
+        task.log_info = Mock()
         task.external_movement = _default_movement
         task.current_round = 3
         task._base_config = {"轮次": 3}
         task._merged_config_cache = None
         task.get_round_info = Mock()
 
-        self.assertTrue(task.stop_func())
-        task.get_round_info.assert_called_once_with()
-        self.assertEqual(task.completed_mission_rounds, 0)
+        task.in_team = Mock(return_value=False)
+        task.find_action_dialog_continue = Mock(return_value=True)
+        task.find_action_dialog_retreat = Mock(return_value=False)
+        self.assertFalse(task.stop_func())
+        task.get_round_info.assert_not_called()
+        self.assertEqual(task.completed_mission_rounds, 1)
 
     def test_limited_task_returns_after_withdrawing_last_round(self):
         task = self.make_defence(limit=1)

@@ -33,9 +33,14 @@ class TestDefenceStatistics(unittest.TestCase):
         task.external_movement = _default_movement
         task.current_round = 0
         task.current_wave = -1
+        task.completed_mission_rounds = 0
+        task.successful_missions = 0
+        task._mission_success_counted = False
+        task._round_dialog_counted = False
         task.wave_future = None
         task._defence_hud_future = None
         task.config = {"轮次": 5}
+        task.action_timeout = 15
         task._executor = SimpleNamespace(frame=np.zeros((10, 10, 3), dtype=np.uint8))
         task.in_team = Mock(return_value=True)
         task.info_set = Mock()
@@ -120,23 +125,121 @@ class TestDefenceStatistics(unittest.TestCase):
         task.in_team.return_value = False
         task.find_action_dialog_continue = Mock(return_value=True)
         task.find_action_dialog_retreat = Mock(return_value=False)
-        task.wait_until = Mock()
-        task.ocr.return_value = texts("04")
+        task.current_round = 81  # Real regression: noisy HUD previously forced retreat.
+        for count in range(1, 6):
+            task._round_dialog_counted = False  # Re-entered gameplay before the next dialog.
+            self.assertEqual(task.stop_func(), count == 5)
+            self.assertEqual(task.stop_func(), count == 5)
+            self.assertEqual(task.completed_mission_rounds, count)
+        self.assertEqual(task.info_set.call_count, 5)
+        task.info_set.assert_called_with("完成轮次", "5/5")
+        task.ocr.assert_not_called()
+
+    def test_non_completion_pages_and_live_hud_never_count(self):
+        task = self.make_task()
+        task.current_round = 81
+        task.find_action_dialog_continue = Mock(return_value=False)
+        task.find_action_dialog_retreat = Mock(return_value=False)
+        for in_team in (True, False):
+            task.in_team.return_value = in_team
+            self.assertFalse(task.stop_func())
+        self.assertEqual(task.completed_mission_rounds, 0)
+
+    def test_continue_keeps_count_and_latch_until_actual_gameplay(self):
+        task = self.make_task()
+        task.in_team.return_value = False
+        task.find_action_dialog_continue = Mock(return_value=True)
+        task.find_action_dialog_retreat = Mock(return_value=False)
+        task.stop_func()
+        task.init_for_next_round()
         self.assertFalse(task.stop_func())
-        task.ocr.return_value = texts("05")
-        self.assertTrue(task.stop_func())
-        self.assertTrue(task.stop_func())
-        self.assertEqual(task.current_round, 5)
-        self.assertEqual(task.info_set.call_count, 2)
-        task.wait_until.assert_not_called()
-        self.assertEqual(task.ocr.call_args.kwargs["box"], "DEFENCE_DIALOG_ROUND_OCR")
-        task.ocr.return_value = []
-        self.assertTrue(task.stop_func())
-        self.assertEqual(task.current_round, 5)
+        self.assertEqual(task.completed_mission_rounds, 1)
+        task.skill_tick = Mock()
+        task.init_all()  # Retry or another fresh mission.
+        self.assertEqual(task.completed_mission_rounds, 0)
+        self.assertFalse(task._round_dialog_counted)
+        task.info_set.assert_any_call("完成轮次", "0/5")
+
+    def test_five_round_main_loop_continues_four_times_then_retires(self):
+        task = self.make_task()
+        page = {"name": "game"}
+        task.mission_status = None
+        task.load_char = Mock()
+        task.skill_tick = Mock()
+        task.move_on_begin = Mock(return_value=True)
+        task.check_for_monthly_card = Mock()
+        task.sleep = Mock()
+        task.in_team = lambda: page["name"] == "game"
+
+        def complete_round():
+            task.current_round = 81
+            page["name"] = "choice"
+
+        task.handle_in_mission = Mock(side_effect=complete_round)
+        for name in ("find_letter_reward_btn", "find_letter_interface", "find_start_interface",
+                     "find_result_again_btn", "find_action_dialog_retreat", "find_esc_menu"):
+            setattr(task, name, Mock(return_value=False))
+        task.find_action_dialog_continue = lambda: page["name"] == "choice"
+        task.find_manual_select_btn = lambda: page["name"] == "manual"
+        task.continue_mission = Mock(side_effect=lambda: page.update(name="manual"))
+        task.choose_drop_rate = Mock(side_effect=lambda: page.update(name="game"))
+        task.wait_until = Mock(side_effect=lambda condition, **kwargs: condition())
+
+        class Withdrawn(Exception):
+            pass
+
+        task.quit_mission = Mock(side_effect=lambda: page.update(name="result"))
+
+        def sleep(_):
+            if page["name"] == "result":
+                raise Withdrawn
+
+        task.sleep.side_effect = sleep
+        task.successful_missions = 7  # Starting the task begins a fresh session total.
+        with self.assertRaises(Withdrawn):
+            task.do_run()
+        self.assertEqual(task.completed_mission_rounds, 5)
+        self.assertEqual(task.handle_in_mission.call_count, 5)
+        self.assertEqual(task.continue_mission.call_count, 4)
+        self.assertEqual(task.choose_drop_rate.call_count, 4)
+        task.quit_mission.assert_called_once()
+        task.info_set.assert_any_call("完成轮次", "5/5")
+        task.info_set.assert_any_call("累计成功场数", 0)
+        task.info_set.assert_any_call("累计成功场数", 1)
+        self.assertEqual(task.successful_missions, 1)
+
+    def test_success_total_survives_new_missions_without_duplicate_counting(self):
+        task = self.make_task()
+        task.skill_tick = Mock()
+        task.completed_mission_rounds = 5
+        task._record_successful_mission()
+        task._record_successful_mission()
+        self.assertEqual(task.successful_missions, 1)
+        task.init_for_next_round()
+        self.assertEqual(task.successful_missions, 1)
+        task.init_all()
+        self.assertEqual(task.successful_missions, 1)
+        task._record_successful_mission()  # Fresh/retried mission has no completions.
+        self.assertEqual(task.successful_missions, 1)
+        task.completed_mission_rounds = 5
+        task._record_successful_mission()
+        self.assertEqual(task.successful_missions, 2)
+        task.info_set.assert_called_with("累计成功场数", 2)
+
+    def test_incomplete_or_external_run_does_not_count_as_semi_auto_success(self):
+        task = self.make_task()
+        task.completed_mission_rounds = 4
+        task._record_successful_mission()
+        self.assertEqual(task.successful_missions, 0)
+        task.external_movement = Mock()
+        task.completed_mission_rounds = 5
+        task._record_successful_mission()
+        self.assertEqual(task.successful_missions, 0)
 
     def test_fifth_round_is_not_stopped_mid_combat_but_retreated_at_dialog(self):
         task = self.make_task()
-        task.current_round = 5
+        task.current_round = 81
+        task.completed_mission_rounds = 4
         stop = Mock(return_value=True)
         self.assertFalse(task.handle_mission_interface(stop_func=stop))
         stop.assert_not_called()
@@ -151,14 +254,6 @@ class TestDefenceStatistics(unittest.TestCase):
         task.continue_mission = Mock()
         self.assertEqual(task.handle_mission_interface(stop_func=task.stop_func), Mission.STOP)
         task.continue_mission.assert_not_called()
-
-        task.init_all = Mock()
-        task.load_char = Mock()
-        task.quit_mission = Mock()
-        task.sleep = Mock(side_effect=StopIteration)
-        with self.assertRaises(StopIteration):
-            task.do_run()
-        task.quit_mission.assert_called_once()
 
     def test_external_path_delegates_and_other_tasks_keep_public_methods(self):
         task = self.make_task()

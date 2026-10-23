@@ -1,11 +1,14 @@
 import time
 from functools import cached_property
 
+from ok import TaskDisabledException
+from qfluentwidgets import FluentIcon
+
 from src.dna_ui.Defs import COORD
 from src.routes.weapon_exp60_gate import GateMatcher
 from src.routes.weapon_exp60_t01 import T01_DURATION, T01_EVENTS, T01_GATE_CHECKPOINT
-from src.tasks.AutoWeaponExp60Task import AutoWeaponExp60Task
-from src.tasks.CommissionsTask import Mission
+from src.tasks.CommissionsTask import CommissionsTask, Mission
+from src.tasks.DNAOneTimeTask import DNAOneTimeTask
 
 
 ROUTE_KEYS = tuple(sorted({key for _, key, _ in T01_EVENTS}))
@@ -18,7 +21,7 @@ def build_t01_schedule():
     return list(T01_EVENTS), T01_DURATION
 
 
-class AutoWeaponExp60RecordedTask(AutoWeaponExp60Task):
+class AutoWeaponExp60RecordedTask(DNAOneTimeTask, CommissionsTask):
     failure_message = '60级武器经验录制路线任务无法继续，请检查当前界面'
 
     def __init__(self, *args, **kwargs):
@@ -26,10 +29,49 @@ class AutoWeaponExp60RecordedTask(AutoWeaponExp60Task):
         self.name = '60级武器经验录制路线'
         self.description = ('在已选好60级的挑战界面或结算页启动，确认进局后等待1.5秒，再回放t01（含录制的Q）；'
                             '检查点识别门框后继续，结算后再次挑战，未通过或未结算则放弃重试')
+        self.group_name = '半自动'
+        self.group_icon = FluentIcon.VIEW
+        self.icon = FluentIcon.FLAG
+        self.lise_enabled = False
+
+    def set_phase(self, phase):
+        self.info_set('当前阶段', phase)
 
     def run(self):
         self.reset_statistics()
-        super().run()
+        previous_pause = self.set_fidget_actions_paused(True)
+        try:
+            DNAOneTimeTask.run(self)
+            self.move_mouse_to_safe_position(save_current_pos=False)
+            self.set_check_monthly_card()
+            self.do_run()
+        except TaskDisabledException:
+            pass
+        except Exception:
+            self.soundBeep()
+            self.log_info_notify(self.failure_message)
+            raise
+        finally:
+            self.lise_enabled = False
+            try:
+                self.release_movement()
+            finally:
+                self.set_fidget_actions_paused(previous_pause)
+
+    def confirm_start(self):
+        """Start with the user's existing selection without changing commission options."""
+        self.mission_status = Mission.START
+
+        def click_confirm():
+            if self.find_manual_select_btn():
+                self.click_ui_coord(COORD.MANUAL_CONFIRM, name='weapon_exp_start', after_sleep=0.25)
+
+        self.wait_until(
+            lambda: not self.find_manual_select_btn(),
+            post_action=click_confirm,
+            time_out=self.action_timeout,
+            raise_if_not_found=True,
+        )
 
     def reset_statistics(self):
         self.success_count = 0

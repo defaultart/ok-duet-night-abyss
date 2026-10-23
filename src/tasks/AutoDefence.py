@@ -45,6 +45,18 @@ def parse_defence_wave(texts):
     return None
 
 
+def matches_defence_start_reading(targets, distances):
+    target_found = any("保护目标" in re.sub(r"\s+", "", text.name)
+                       for text in targets or ())
+    if not target_found:
+        return False
+    for text in distances or ():
+        match = re.fullmatch(r"(\d+)米", re.sub(r"\s+", "", text.name))
+        if match and 36 <= int(match.group(1)) <= 38:
+            return True
+    return False
+
+
 class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
 
     auto_advance_timeout = 10
@@ -63,6 +75,7 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
 
         self.config_description.update({
             "超时时间": "波次超时后将发出提示",
+            "轮次": "每次对局实际完成多少轮后撤离，不使用 HUD OCR 数字判断",
         })
 
         self.quick_assist_task = QuickAssistTask(self)
@@ -103,9 +116,14 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
         self._external_config = config
 
     def run(self):
-        DNAOneTimeTask.run(self)
-        self.move_mouse_to_safe_position(save_current_pos=False)
-        self.set_check_monthly_card()
+        previous_pause = self.set_fidget_actions_paused(True)
+        try:
+            DNAOneTimeTask.run(self)
+            if not self.find_letter_interface():
+                self.move_mouse_to_safe_position(save_current_pos=False)
+            self.set_check_monthly_card()
+        finally:
+            self.set_fidget_actions_paused(previous_pause)
         self.external_movement = _default_movement
         self.external_runtime_tick = None
         try:
@@ -117,6 +135,9 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             raise
 
     def do_run(self):
+        self.successful_missions = 0
+        if self.external_movement is _default_movement:
+            self.info_set("累计成功场数", 0)
         self.completed_mission_rounds = 0
         self._round_dialog_counted = False
         self._external_round_started = False
@@ -152,6 +173,7 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             elif _status == Mission.STOP:
                 self.log_info("任务中止")
                 self.quit_mission()
+                self._record_successful_mission()
                 if self.reached_external_round_limit():
                     round_limit = self.external_round_limit()
                     self.log_info(f"已完成全部 {round_limit} 场，任务结束")
@@ -160,7 +182,6 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             elif _status == Mission.CONTINUE:
                 self.log_info("任务继续")
                 self.init_for_next_round()
-                self._round_dialog_counted = False
                 self._external_round_started = True
                 self.wait_until(self.in_team, time_out=self.action_timeout)
 
@@ -171,10 +192,17 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
         self.skill_tick.reset()
         self.current_round = 0
         if self.external_movement is _default_movement:
+            self._mission_success_counted = False
+            self.completed_mission_rounds = 0
+            self._round_dialog_counted = False
             self.info_set("当前轮次", 0)
+            self.info_set("完成轮次", f"0/{self.config.get('轮次', 5)}")
         self._mission_started = False
 
     def init_for_next_round(self):
+        self._battle_lise_active = False
+        if self.external_movement is _default_movement:
+            self.reset_detection()
         self.init_runtime_state()
 
     def init_runtime_state(self):
@@ -187,6 +215,31 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             pending.cancel()
         self._defence_hud_future = None
         super().reset_wave_info()
+
+    def matches_defence_start_map(self):
+        # Both OCR regions must match in the same frame, before any movement.
+        frame = self.frame.copy()
+        try:
+            targets = self.ocr(frame=frame, box=self.screen_box("DEFENCE_START_TARGET_OCR"),
+                               frame_processor=normalize_defence_round, name="defence_start_target")
+            distances = self.ocr(frame=frame, box=self.screen_box("DEFENCE_START_DISTANCE_OCR"),
+                                 frame_processor=normalize_defence_round, name="defence_start_distance")
+        except TaskDisabledException:
+            raise
+        except Exception as error:
+            self.log_debug(f"自动扼守入场 OCR 失败，等待重试：{error}")
+            return False
+        return matches_defence_start_reading(targets, distances)
+
+    def move_on_begin(self):
+        if self._mission_started or self.external_movement is not _default_movement:
+            return True
+        if not self.wait_until(self.matches_defence_start_map, time_out=3, settle_time=0,
+                               raise_if_not_found=False):
+            self.log_info("入场地图不匹配，重开任务")
+            self.give_up_mission()
+            return False
+        return super().move_on_begin()
 
     def _read_defence_hud(self, frame, round_box, wave_box):
         # Both reads belong to the same captured frame; worker only returns data.
@@ -240,9 +293,35 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
                          name="defence_completed_round")
         self._update_defence_round(parse_defence_round(texts))
 
+    def is_in_combat(self):
+        in_combat = super().is_in_combat()
+        self._update_battle_lise_ultimate()
+        return in_combat
+
+    def _update_battle_lise_ultimate(self):
+        if (self.external_movement is not _default_movement
+                or not getattr(self, "_mission_started", False)
+                or not self.in_team()):
+            return
+        if self.current_wave != -1 and not getattr(self, "_battle_lise_active", False):
+            self.reset_detection()
+            self._battle_lise_active = True
+            self.log_info("首次进入战斗，已启用黎瑟自动 Q")
+        self.tick_enabled_lise_ultimate()
+
+    def tick_enabled_lise_ultimate(self):
+        if self.external_movement is not _default_movement:
+            return super().tick_enabled_lise_ultimate()
+        if (getattr(self, "_battle_lise_active", False)
+                and getattr(self, "_mission_started", False) and self.in_team()):
+            # Reuse the shared monitor's HUD checks, confirmations and cooldown;
+            # never blindly toggle Q on combat entry, even with empty skill slots.
+            return self.check_lise_ultimate()
+
     def handle_in_mission(self):
         """处理在副本中的逻辑"""
         self.get_wave_info()
+        self._update_battle_lise_ultimate()
         in_combat = self.current_wave != -1
         if in_combat:
             # 如果是新的波次，重置状态
@@ -299,8 +378,7 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
                 self.log_info("战斗开始")
         else:
             self.sleep(2)
-            self.log_info_notify("任务开始")
-            self.soundBeep()
+            self.log_info("任务开始")
 
     def _run_external_runtime_tick(self):
         runtime_tick = getattr(self, "external_runtime_tick", None)
@@ -324,10 +402,34 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
                 )
             return self.completed_mission_rounds >= round_limit
 
+        if self.external_movement is _default_movement:
+            # Only a completed-round choice dialog counts. HUD OCR may jump to
+            # unrelated digits (e.g. 1 -> 5 -> 81) and is display-only here.
+            if self.in_team() or not (self.find_action_dialog_continue() or self.find_action_dialog_retreat()):
+                return False
+            n = self.config.get("轮次", 5)
+            if not self._round_dialog_counted:
+                self.completed_mission_rounds += 1
+                self._round_dialog_counted = True
+                self.info_set("完成轮次", f"{self.completed_mission_rounds}/{n}")
+                self.log_info(f"已实际完成 {self.completed_mission_rounds}/{n} 轮")
+            return self.completed_mission_rounds >= n
+
+        # Preserve callers with an external route but no explicit round limit.
         self.get_round_info()
         n = self.config.get("轮次", 3)
         if self.current_round >= n:
             return True
+
+    def _record_successful_mission(self):
+        """Count a full semi-auto run only after its final withdrawal succeeds."""
+        if (self.external_movement is not _default_movement
+                or getattr(self, "_mission_success_counted", False)
+                or self.completed_mission_rounds < self.config.get("轮次", 5)):
+            return
+        self._mission_success_counted = True
+        self.successful_missions += 1
+        self.info_set("累计成功场数", self.successful_missions)
 
     def handle_external_round_completion(self):
         """在魔之楔完成页计数；达到上限时停止任务且不再点击当前画面。"""

@@ -51,6 +51,12 @@ class TestAdvanceTimeoutRetry(unittest.TestCase):
                 task.log_info.assert_called_once_with(f"前进 {timeout} 秒仍未进入战斗，重开任务")
 
     def test_timeout_restarts_through_result_manual_and_initial_movement(self):
+        self.check_restart_through_result_manual_and_initial_movement(first_map_matches=True)
+
+    def test_map_mismatch_restarts_through_result_manual_and_initial_movement(self):
+        self.check_restart_through_result_manual_and_initial_movement(first_map_matches=False)
+
+    def check_restart_through_result_manual_and_initial_movement(self, *, first_map_matches):
         task = object.__new__(AutoDefence)
         task.external_movement = _default_movement
         task.external_movement_immediate = False
@@ -71,6 +77,7 @@ class TestAdvanceTimeoutRetry(unittest.TestCase):
 
         task.in_team = lambda: state["page"] == "ingame"
         task.is_in_combat = lambda: state["attempt"] == 2
+        task.matches_defence_start_map = Mock(side_effect=lambda: first_map_matches or state["attempt"] == 2)
         task.find_result_again_btn = lambda: state["page"] == "result"
         task.find_manual_select_btn = lambda: state["page"] == "manual"
         for name in ("find_start_interface", "find_letter_interface", "find_letter_reward_btn",
@@ -101,6 +108,8 @@ class TestAdvanceTimeoutRetry(unittest.TestCase):
                     return result
                 if post_action:
                     post_action()
+            if kwargs.get("time_out") == 3:
+                return False  # Entry OCR window elapsed without a match.
             self.fail("Recovery waited without recognizing the current screen")
 
         def click(coord, **kwargs):
@@ -128,8 +137,11 @@ class TestAdvanceTimeoutRetry(unittest.TestCase):
             with self.assertRaises(ReenteredCombat):
                 task.do_run()
 
-        self.assertEqual(events, ["w down", "w up", "esc giveup confirm",
-                                  "again", "start challenge", "w down", "w up"])
+        initial_movement = ["w down", "w up"] if first_map_matches else []
+        self.assertEqual(events, initial_movement + ["esc giveup confirm",
+                                                    "again", "start challenge", "w down", "w up"])
+        self.assertGreaterEqual(task.matches_defence_start_map.call_count, 2)
+        self.assertEqual(task.completed_mission_rounds, 0)
         self.assertIn((60, 1), waits, "Result page must end give_up_mission's wait immediately")
         self.assertIsNone(task.mission_status)
         self.assertTrue(task._mission_started)

@@ -8,6 +8,7 @@ import winsound
 import win32api
 import win32con
 import random
+from threading import RLock
 from collections import deque
 
 from datetime import datetime, timedelta
@@ -710,9 +711,7 @@ class BaseDNATask(BaseTask):
             ])
 
         def in_team():
-            if self.shared_frame is None:
-                return True
-            return self.in_team(self.shared_frame)
+            return self.fidget_in_game()
 
         def check_alt_logic():
             nonlocal lalt_pressed, needs_resync
@@ -791,7 +790,8 @@ class BaseDNATask(BaseTask):
 
         def fidget_is_paused():
             nonlocal lalt_pressed, needs_resync
-            if not self.fidget_params.get("paused", False):
+            if not (self.fidget_params.get("paused", False)
+                    or self.executor.paused or not in_team()):
                 return False
             # 精确菜单操作期间不能残留修饰键；解除暂停后按原配置自动恢复。
             if lalt_pressed:
@@ -806,11 +806,13 @@ class BaseDNATask(BaseTask):
                 if self.executor.current_task is None or self.executor.exit_event.is_set():
                     return False
 
-                if fidget_is_paused():
+                with self.fidget_input_lock:
+                    paused = fidget_is_paused()
+                    if not paused:
+                        check_alt_logic()
+                if paused:
                     time.sleep(0.05)
                     continue
-
-                check_alt_logic()
                 time.sleep(0.1)
             return True
 
@@ -829,19 +831,15 @@ class BaseDNATask(BaseTask):
                 self.log_info("fidget action started")
 
             while self.executor.current_task is not None and not self.executor.exit_event.is_set():
-                if self.executor.paused:
-                    time.sleep(0.1)
-                    continue
-
-                if fidget_is_paused():
+                with self.fidget_input_lock:
+                    paused = fidget_is_paused()
+                    if not paused:
+                        check_alt_logic()
+                        current_drift = perform_mouse_jitter(current_drift)
+                        perform_random_key_press(random_key_list)
+                if paused:
                     time.sleep(0.05)
                     continue
-
-                check_alt_logic()
-
-                current_drift = perform_mouse_jitter(current_drift)
-
-                perform_random_key_press(random_key_list)
 
                 long_sleep = random.choice([
                     random.uniform(3.05, 3.20), # ~ 3.0 / 3.3
@@ -854,7 +852,27 @@ class BaseDNATask(BaseTask):
                     
             self.log_debug("fidget action stopped")
 
+        with self.fidget_input_lock:
+            self._fidget_pause_hook = fidget_is_paused
         self.thread_pool_executor.submit(_fidget_worker)
+
+    @cached_property
+    def fidget_input_lock(self):
+        return RLock()
+
+    def fidget_in_game(self):
+        """Only a positively identified current executor frame permits background input.
+
+        Never capture from the worker or treat a missing shared frame as gameplay.
+        """
+        frame = getattr(self.executor, "_frame", None)
+        if frame is None or frame.size == 0:
+            return False
+        try:
+            return bool(self.in_team(frame=frame))
+        except Exception:
+            # Resolution changes and incomplete frames must not cause menu input.
+            return False
 
     def set_fidget_actions_paused(self, paused: bool) -> bool:
         """临时暂停防挂机线程的鼠标和按键动作，并返回之前的暂停状态。"""
@@ -863,6 +881,11 @@ class BaseDNATask(BaseTask):
             return False
         previous = bool(params.get("paused", False))
         params["paused"] = bool(paused)
+        # Wait for an in-flight input sequence to finish; release held Alt before returning.
+        with self.fidget_input_lock:
+            hook = getattr(self, "_fidget_pause_hook", None)
+            if paused and callable(hook):
+                hook()
         return previous
 
 track_point_color = {
