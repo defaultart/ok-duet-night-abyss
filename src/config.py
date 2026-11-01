@@ -221,6 +221,7 @@ config = {
         ["src.tasks.fullauto.ImportTask", "ImportTask"],
         ["src.tasks.fullauto.AutoTheatreTask", "AutoTheatreTask"],
         ["src.tasks.fullauto.AutoMoonHunterTask", "AutoMoonHunterTask"],
+        ["src.tasks.fullauto.AutoMijinTask", "AutoMijinTask"],
         ["src.tasks.AutoSkill", "AutoSkill"],
         ["src.tasks.AutoGeneral", "AutoGeneral"],
         ["src.tasks.AutoExpulsion", "AutoExpulsion"],
@@ -241,6 +242,7 @@ config = {
         ["src.tasks.trigger.AutoMoveTask", "AutoMoveTask"],
         ["src.tasks.trigger.AutoAimTask", "AutoAimTask"],
         ["src.tasks.trigger.AutoRogueDialogTask", "AutoRogueDialogTask"],
+        ["src.tasks.trigger.AutoYvonneUltimateTask", "AutoYvonneUltimateTask"],
     ],
     "scene": ["src.scene.DNAScene", "DNAScene"],
     "update_pyappify": {

@@ -102,7 +102,14 @@ class LiseUltimateMixin:
             logger.info(f"{message} [状态={status}, 等待开启确认={self._awaiting_active}]")
 
     def check_lise_ultimate(self, in_team=None):
-        """Check Q using the caller task and its current frame."""
+        """Keep the existing Lise entry point for embedded and global callers."""
+        return self.check_toggle_ultimate(
+            in_team, character_name="黎瑟", energy_threshold=ENERGY_THRESHOLD,
+            max_cost=MAX_PLAUSIBLE_COST,
+        )
+
+    def check_toggle_ultimate(self, in_team=None, *, character_name, energy_threshold, max_cost):
+        """Check a toggle Q using the caller task and its current frame."""
         if not hasattr(self, "_awaiting_active"):
             self.reset_detection()
         now = time.monotonic()
@@ -111,12 +118,12 @@ class LiseUltimateMixin:
         self._next_check_at = now + CHECK_INTERVAL
 
         if not (in_team() if in_team is not None else self.in_team_and_world()):
-            self._log_status("not_in_team", "黎瑟 Q：当前画面未识别到局内 HUD，本次不操作")
+            self._log_status("not_in_team", f"{character_name} Q：当前画面未识别到局内 HUD，本次不操作")
             return
 
         q_cost = self._read_hud_number("LISE_Q_COST_OCR")
-        if q_cost is None or q_cost > MAX_PLAUSIBLE_COST:
-            self._log_status("cost_unreadable", f"黎瑟 Q：消耗读数 {q_cost} 不可用，本次不操作")
+        if q_cost is None or (max_cost is not None and q_cost > max_cost):
+            self._log_status("cost_unreadable", f"{character_name} Q：消耗读数 {q_cost} 不可用，本次不操作")
             return
         if q_cost == 0:
             was_awaiting_active = self._awaiting_active
@@ -126,28 +133,28 @@ class LiseUltimateMixin:
             self._awaiting_active = False
             self._cooldown_until = now + PRESS_COOLDOWN
             if was_awaiting_active:
-                self._log_status("active_confirmed", "黎瑟 Q：已确认开启（消耗 0）", info=True)
+                self._log_status("active_confirmed", f"{character_name} Q：已确认开启（消耗 0）", info=True)
             else:
-                self._log_status("active", "黎瑟 Q：当前已开启（消耗 0）")
+                self._log_status("active", f"{character_name} Q：当前已开启（消耗 0）")
             return
 
         energy = self._read_hud_number("LISE_ENERGY_OCR")
         if energy is None:
-            self._log_status("energy_unreadable", f"黎瑟 Q：消耗 {q_cost}，但无法识别黄色能量")
+            self._log_status("energy_unreadable", f"{character_name} Q：消耗 {q_cost}，但无法识别黄色能量")
             return
-        if energy <= ENERGY_THRESHOLD:
+        if energy <= energy_threshold:
             self._low_energy_streak += 1
             if self._low_energy_streak < LOW_ENERGY_RESETS:
                 self._log_status(
                     "energy_low_once",
-                    f"黎瑟 Q：消耗 {q_cost}，能量 {energy} 偏低，再确认一次",
+                    f"{character_name} Q：消耗 {q_cost}，能量 {energy} 偏低，再确认一次",
                 )
                 return
             self._confirmations = 0
             self._last_good_at = 0.0
             self._log_status(
                 "energy_low",
-                f"黎瑟 Q：消耗 {q_cost}，当前能量 {energy}（需要大于 {ENERGY_THRESHOLD}）",
+                f"{character_name} Q：消耗 {q_cost}，当前能量 {energy}（需要大于 {energy_threshold}）",
             )
             return
 
@@ -157,19 +164,19 @@ class LiseUltimateMixin:
         self._last_good_at = now
         self._confirmations += 1
         if self._confirmations < REQUIRED_CONFIRMATIONS:
-            self._log_status("confirming", f"黎瑟 Q：消耗 {q_cost}，能量 {energy}，等待二次确认")
+            self._log_status("confirming", f"{character_name} Q：消耗 {q_cost}，能量 {energy}，等待二次确认")
             return
 
         self._confirmations = 0
         self._last_good_at = 0.0
         self._cooldown_until = now + RETRY_COOLDOWN
         if self.send_key(self.key_config["Ultimate Key"], down_time=PRESS_DOWN_TIME) is False:
-            self._log_status("send_failed", "黎瑟 Q：按键未发送，稍后重试")
+            self._log_status("send_failed", f"{character_name} Q：按键未发送，稍后重试")
             return
         self._awaiting_active = True
         self._log_status(
             "pressed",
-            f"黎瑟 Q：已发送终结技按键（消耗 {q_cost}，能量 {energy}），等待开启确认",
+            f"{character_name} Q：已发送终结技按键（消耗 {q_cost}，能量 {energy}），等待开启确认",
             info=True,
         )
         return True

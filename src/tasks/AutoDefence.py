@@ -45,16 +45,23 @@ def parse_defence_wave(texts):
     return None
 
 
-def matches_defence_start_reading(targets, distances):
+def classify_defence_start_reading(targets, distances):
     target_found = any("保护目标" in re.sub(r"\s+", "", text.name)
                        for text in targets or ())
     if not target_found:
-        return False
+        return None
     for text in distances or ():
         match = re.fullmatch(r"(\d+)米", re.sub(r"\s+", "", text.name))
-        if match and 36 <= int(match.group(1)) <= 38:
-            return True
-    return False
+        if match:
+            distance = int(match.group(1))
+            for scene in (29, 37, 51):
+                if scene - 1 <= distance <= scene + 1:
+                    return scene
+    return None
+
+
+def matches_defence_start_reading(targets, distances):
+    return classify_defence_start_reading(targets, distances) is not None
 
 
 class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
@@ -188,6 +195,8 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
             self.sleep(0.1)
 
     def init_all(self):
+        self._defence_start_scene = None
+        self.auto_advance_timeout = 10
         self.init_for_next_round()
         self.skill_tick.reset()
         self.current_round = 0
@@ -218,6 +227,7 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
 
     def matches_defence_start_map(self):
         # Both OCR regions must match in the same frame, before any movement.
+        self._defence_start_scene = None
         frame = self.frame.copy()
         try:
             targets = self.ocr(frame=frame, box=self.screen_box("DEFENCE_START_TARGET_OCR"),
@@ -229,16 +239,23 @@ class AutoDefence(DNAOneTimeTask, CommissionsTask, BaseCombatTask):
         except Exception as error:
             self.log_debug(f"自动扼守入场 OCR 失败，等待重试：{error}")
             return False
-        return matches_defence_start_reading(targets, distances)
+        self._defence_start_scene = classify_defence_start_reading(targets, distances)
+        return self._defence_start_scene is not None
 
     def move_on_begin(self):
         if self._mission_started or self.external_movement is not _default_movement:
             return True
+        self._defence_start_scene = None
+        self.auto_advance_timeout = 10
         if not self.wait_until(self.matches_defence_start_map, time_out=3, settle_time=0,
                                raise_if_not_found=False):
             self.log_info("入场地图不匹配，重开任务")
             self.give_up_mission()
             return False
+        if self._defence_start_scene in (29, 51):
+            self._mission_started = True
+            self.auto_advance_timeout = 20 if self._defence_start_scene == 51 else 10
+            return self.advance_until_combat()
         return super().move_on_begin()
 
     def _read_defence_hud(self, frame, round_box, wave_box):

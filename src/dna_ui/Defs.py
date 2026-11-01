@@ -79,6 +79,16 @@ class SCREEN_BOX:
     相同，换了比例就会偏移。目前只有 FISH_CHANCE 是 False。
     """
 
+    # ---- 迷津：同时覆盖含标题栏截图及客户区归一化后的文字 ----
+    MIJIN_ENTER_OCR = (1600, 900, 1350, 690, 1560, 790, True)
+    MIJIN_START_OCR = (1600, 900, 1280, 760, 1530, 840, True)
+    MIJIN_OBJECTIVE_OCR = (1600, 900, 20, 240, 250, 330, True)
+    MIJIN_CANDLE_OCR = (1600, 900, 680, 45, 940, 125, True)
+    MIJIN_EXIT_OCR = (1600, 900, 1430, 820, 1565, 875, True)
+    MIJIN_CONFIRM_OCR = (1600, 900, 390, 390, 1190, 460, True)
+    MIJIN_RESULT_OCR = (1600, 900, 680, 65, 930, 155, True)
+    MIJIN_REVIVE_OCR = (1600, 900, 750, 780, 870, 845, True)
+
     # ---- 委托流程 ----
     REWARD_DRAG_AREA = (2560, 1440, 69, 969, 2498, 1331, True)      # start_mission 鼠标安全区
     # 调停：范围同时兼容含标题栏截图与裁掉标题栏后拉伸的客户区。
@@ -93,8 +103,9 @@ class SCREEN_BOX:
     DEFENCE_HUD_WAVE_OCR = (1600, 900, 150, 309, 260, 365, True)
     DEFENCE_DIALOG_ROUND_OCR = (1600, 900, 325, 292, 385, 365, True)
     # 入场正前方的目标与距离；同时覆盖原图和去标题栏后拉伸的文字位置。
-    DEFENCE_START_TARGET_OCR = (1600, 900, 740, 315, 855, 362, True)
-    DEFENCE_START_DISTANCE_OCR = (1600, 900, 760, 365, 835, 415, True)
+    # 覆盖 29 / 37 / 51 米场景；29 米场景的目标文字和距离更靠下。
+    DEFENCE_START_TARGET_OCR = (1600, 900, 740, 315, 855, 390, True)
+    DEFENCE_START_DISTANCE_OCR = (1600, 900, 760, 365, 835, 440, True)
     SETTING_OTHER_TAB = (1600, 900, 500, 0, 620, 60, True)          # 设置「其他」页签
     # “其他”页的设置项会保留滚动位置，不能用固定 y 点击“复位角色”。
     # 只在左侧文字列 OCR“重置位置”，再由识别结果动态计算同一行的右侧操作框。
@@ -169,6 +180,13 @@ REWARD_SELECTED_BOX = (
 
 class COORD:
     """点击坐标（1600x900 基准）。判据负责"认界面"，这里负责"点哪里"。"""
+
+    # ---- 迷津（两个标题栏布局中均处于按钮内部）----
+    MIJIN_ENTER = (1450, 735)
+    MIJIN_START = (1400, 805)
+    MIJIN_BLANK = (1100, 600)
+    MIJIN_EXIT = (1490, 815)
+    MIJIN_CONFIRM = (960, 535)
 
     # ---- 开始界面 ----
     START_SCREEN_BTN = (1291, 820)
