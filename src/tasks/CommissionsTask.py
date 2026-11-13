@@ -57,6 +57,10 @@ def reset_action_box_for_row(reset_row, screen_width, screen_height):
     )
 
 
+class MissionRecognitionTimeout(Exception):
+    """界面切换未能在期限内确认，由自动驱离主循环重新识别当前画面。"""
+
+
 class Mission(Enum):
     START = 1
     CONTINUE = 2
@@ -67,6 +71,8 @@ class Mission(Enum):
 class CommissionsTask(LiseUltimateMixin, BaseDNATask):
 
     auto_advance_timeout = AUTO_ADVANCE_TIME_OUT
+    # 仅自动驱离覆盖此开关，其他委托任务保留原有超时和停止语义。
+    retry_mission_recognition = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -117,7 +123,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         })
         self.config_type["挂机模式"] = {
             "type": "drop_down",
-            "options": ["开局重置角色位置", "开局向前走", "自动前进到开战"],
+            "options": ["开局重置角色位置", "开局向前走", "自动前进到开战", "不动"],
         }
 
     def setup_combat_detection_config(self):
@@ -194,7 +200,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         return False
 
     def move_on_begin(self):
-        """开局处理：复位角色位置 / 向前走几秒 / 前进到进入战斗。每次进局内只做一次。
+        """开局处理：复位角色位置 / 向前走几秒 / 前进到进入战斗 / 不动。每次进局内只做一次。
 
         返回 False 表示这次没能开局成功（已经放弃并退出副本），调用方不要继续
         跑局内逻辑。被全自动任务注入录制走位时整段跳过 —— 那时起点由录制路线
@@ -206,12 +212,14 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         return self.apply_afk_mode()
 
     def apply_afk_mode(self):
-        """按「挂机模式」配置处理角色当前的位置：复位角色 / 向前走几秒 / 前进到开战。
+        """按「挂机模式」配置处理角色当前的位置：复位角色 / 向前走几秒 / 前进到开战 / 不动。
 
         原本只是 `move_on_begin()` 的开局处理，抽出来是因为沉浸式戏剧要在"层间切换"时再跑
         一次同样的处理 —— 那边由任务自己调用，不走 `move_on_begin` 的一次性开关。
         """
         mode = self.config.get("挂机模式")
+        if mode == "不动":
+            return True
         if mode == "开局重置角色位置":
             if not self.reset_and_transport():
                 # 复位失败时人已经不在队伍界面了，别让上层以为开局成功
@@ -332,13 +340,30 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         self.sleep(0.2)
         return found
 
+    def wait_mission_transition(self, *args, **kwargs):
+        """等待界面切换，参数沿用 wait_until；返回识别结果，不执行额外点击。
+
+        自动驱离把等待超时转换为可恢复信号，其他任务仍由框架处理超时；
+        条件检测、点击动作中的真实异常和手动停止均原样传播。
+        """
+        if not self.retry_mission_recognition:
+            # 其他任务不改变等待参数、返回值及框架原有异常类型。
+            return self.wait_until(*args, **kwargs)
+        kwargs["raise_if_not_found"] = False
+        # 只转换正常等待结束后的未命中，不捕获检测函数或外部交互抛出的异常。
+        result = self.wait_until(*args, **kwargs)
+        if not result:
+            # 由主循环统一限频记录原因，避免每次等待超时重复刷日志。
+            raise MissionRecognitionTimeout("等待任务界面切换超时")
+        return result
+
     def start_mission(self, timeout=0):
         """点「开始 / 再次进行」，然后等进入下一步（手册弹窗或密函弹窗）。
 
         失败语义：
           * 从没见到按钮就超时 -> 抛普通 Exception（加载慢、云游戏卡顿属这类，可重试）；
           * 点过按钮却一直没进下一步 -> 响铃 + TaskDisabledException，让任务优雅停止。
-        别把第一种抛成 TaskDisabledException，那会把瞬时卡顿变成永久停任务。
+        自动驱离的两类超时均交回主循环重新识别，其他任务保留上述失败语义。
         """
         action_timeout = self.action_timeout if timeout == 0 else timeout
         box = self.screen_box('REWARD_DRAG_AREA')
@@ -368,6 +393,9 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
                                time_out=2):
                 return
 
+        if self.retry_mission_recognition:
+            # 加载或识别暂时失败不代表任务结束，保留状态并重新观察当前界面。
+            raise MissionRecognitionTimeout("开始任务后未识别到下一界面" if clicked else "等待开始任务超时")
         if clicked:
             self.soundBeep()
             self.log_info_notify("任务无法继续")
@@ -392,14 +420,14 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         各模式的按钮位置和确认弹窗都一样，所以这里通用；退出之后回到哪个界面由调用方决定：
         `give_up_mission()` 等的是模式界面，狩月人那种等的是结算页 / 阵容页。
         两次点击都是云游戏爱丢的，所以都是"点到出结果为止"。
-        返回是否成功打开了菜单并发起了退出。
+        返回是否成功打开了菜单并发起了退出；自动驱离切换超时后交回主循环识别。
         """
         action_timeout = self.action_timeout if timeout == 0 else timeout
 
         if not self.open_in_mission_menu(time_out=10, raise_if_not_found=False):
             return False
-        # ESC 菜单里「退出 / 放弃挑战」
-        self.wait_until(
+        # 已识别 ESC 菜单才执行退出，切换超时交回主循环，不把未知场景当作停止条件。
+        self.wait_mission_transition(
             condition=lambda: not self.find_esc_menu(),
             post_action=lambda: self.click_ui_coord(COORD.ESC_GIVEUP, name="esc_giveup", after_sleep=0.25),
             time_out=action_timeout,
@@ -413,7 +441,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
             confirmed['box'] = self.find_center_confirm(threshold=0.9)
             self._click_detected(confirmed.get('box'), name="giveup_confirm")
 
-        self.wait_until(
+        self.wait_mission_transition(
             condition=lambda: not self.find_center_confirm(threshold=0.9),
             post_action=_click_giveup_confirm,
             time_out=action_timeout,
@@ -437,7 +465,8 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         if self.in_team():
             return False
         action_timeout = self.action_timeout if timeout == 0 else timeout
-        self.wait_until(
+        # 切换超时只对自动驱离转为重识别，避免瞬时卡顿永久终止挂机。
+        self.wait_mission_transition(
             condition=lambda: not self.find_action_dialog_continue() and not self.find_action_dialog_retreat(),
             post_action=self.click_action_dialog_continue,
             time_out=action_timeout,
@@ -454,6 +483,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
           * 单按钮版（局内继续轮次）：只有居中的 [Space] 确认选择 -> COORD.MANUAL_CONFIRM_NEXT
         两套布局的 ⊘ 判据位置相同，光靠判据分不出来，用 mission_status 区分：
         只有"局内继续轮次"这一条路径会把 mission_status 置成 Mission.CONTINUE。
+        自动驱离确认超时后交回主循环识别，其他任务保留原有超时行为。
         """
         def click_confirm():
             if not self.find_manual_select_btn():
@@ -465,7 +495,8 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         action_timeout = self.action_timeout if timeout == 0 else timeout
         self.sleep(0.5)
         self.choose_drop_rate_item()
-        self.wait_until(
+        # 委托确认后可能遇到加载画面，由主循环重新识别后再决定下一步。
+        self.wait_mission_transition(
             condition=lambda: not self.find_manual_select_btn(),
             post_action=click_confirm,
             time_out=action_timeout,
@@ -499,7 +530,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
             self.set_fidget_actions_paused(previous_pause)
 
     def _choose_letter_once(self, timeout=0):
-        """保留当前密函选择，自动模式只点击一次确认选择。"""
+        """保留当前密函选择，自动模式单次确认；自动驱离等待超时后重新识别。"""
         if not hasattr(self, "config"):
             return
         action_timeout = self.action_timeout if timeout == 0 else timeout
@@ -507,7 +538,8 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         if mode == LETTER_HANDLE_WAIT_USER:
             self.log_info_notify("需自行选择密函")
             self.soundBeep()
-            self.wait_until(
+            # 用户选择模式不代替用户点击，等待超时后仍允许继续手动选择。
+            self.wait_mission_transition(
                 lambda: not self.find_letter_interface(),
                 time_out=300,
                 raise_if_not_found=True,
@@ -517,7 +549,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
             return self._confirm_letter_once(action_timeout)
 
     def _confirm_letter_once(self, timeout=0):
-        """暂停防挂机，只移动到确认按钮并单击，随后只观察，不恢复鼠标位置。"""
+        """暂停防挂机并单击确认，不恢复鼠标；自动驱离超时后交回主循环识别。"""
         previous_pause = self.set_fidget_actions_paused(True)
         try:
             if not self.find_letter_interface():
@@ -526,6 +558,9 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
             if not self.wait_until(lambda: not self.find_letter_interface(),
                                    time_out=timeout or self.action_timeout,
                                    settle_time=0, raise_if_not_found=False):
+                if self.retry_mission_recognition:
+                    # 本次确认已经结束，重新识别后才允许下一次操作，避免盲目连点。
+                    raise MissionRecognitionTimeout("密函确认后界面未关闭")
                 self.log_info("密函确认后界面未关闭，停止任务以避免重复点击")
                 raise TaskDisabledException()
         finally:
@@ -541,6 +576,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
 
         每个区域先经 `normalize_ocr_scale` 归一化字号：1600x900 下单数字只有 16px 高，
         检测器会整个漏掉它（实测只剩「持有数：」）或把它认成别的数字；2K/4K 下本来就够大。
+        自动驱离在数字识别重试耗尽后交回主循环，其他任务保留原有异常行为。
         """
         reward_pattern = re.compile(r'[0-9]+')
         # 1600x900 的字号太小，统一放大到它的 2 倍；高分辨率按比例少放或不放
@@ -555,6 +591,9 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
                 found = self.ocr(box=box, match=reward_pattern,
                                  frame_processor=lambda img: normalize_ocr_scale(img, scale))
                 if not found:
+                    if self.retry_mission_recognition:
+                        # 仅数字缺失属于可恢复识别失败，OCR 引擎等真实异常仍原样抛出。
+                        raise MissionRecognitionTimeout("第 %d 个奖励持有数识别失败" % index)
                     raise Exception("第 %d 个奖励持有数识别失败，这个区域一个数字都没识别到" % index)
                 counts.append(int(reward_pattern.search(found[0].name).group()))
             return counts
@@ -564,6 +603,12 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         for attempt_index in range(1, attempt + 1):
             try:
                 return read_once()
+            except MissionRecognitionTimeout:
+                if attempt_index == attempt:
+                    # 本轮短重试耗尽后交给主循环限频提示，不在内部重复打印识别失败日志。
+                    raise
+                # 奖励卡片可能仍在淡入，保留原有短重试间隔，停止信号由 sleep 直接传播。
+                self.sleep(1)
             except Exception as e:
                 if attempt_index == attempt:
                     raise
@@ -594,7 +639,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
                                                name='letter_reward_%d' % index)
 
         # 点了不算成功：✔ 得出现在这一张的底栏才算选中，没出现就再点一次
-        self.wait_until(
+        self.wait_mission_transition(
             condition=lambda: self.find_reward_selected(index) is not None,
             post_action=lambda: self.click_box_random(target_box, down_time=0.02, after_sleep=0.3),
             time_out=10,
@@ -607,7 +652,8 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         if reward_strategy == LETTER_REWARD_WAIT_USER:
             self.log_info_notify("需自行选择密函奖励")
             self.soundBeep()
-            self.wait_until(
+            # 用户选择未完成只继续等待，不自动选择奖励或结束自动驱离。
+            self.wait_mission_transition(
                 lambda: not self.find_letter_reward_btn(),
                 time_out=300,
                 raise_if_not_found=True,
@@ -615,7 +661,8 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         else:
             if reward_strategy in (LETTER_REWARD_COUNT_ZERO, LETTER_REWARD_COUNT_MIN, LETTER_REWARD_COUNT_MAX):
                 self.choose_target_letter_reward()
-            self.wait_until(
+            # 奖励确认超时后根据最新画面恢复，避免加载抖动导致任务退出。
+            self.wait_mission_transition(
                 condition=lambda: not self.find_letter_reward_btn(),
                 post_action=lambda: self.click_ui_coord(COORD.LETTER_REWARD_CONFIRM,
                                                         name="letter_reward_confirm",
@@ -752,7 +799,7 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
             self.sleep(0.2)
 
     def handle_mission_interface(self, stop_func=lambda: False):
-        """每步操作后重新看画面：匹配到哪个元素，就执行哪一段逻辑（优先级从高到低）。"""
+        """按优先级识别并处理界面；自动驱离在切换前保留状态，供超时恢复使用。"""
         if self.in_team():
             return False
 
@@ -778,6 +825,9 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
         # 「再次进行」只在结算界面出现，那里开始界面判据不命中，必须显式带上
         if self.find_start_interface() or self.find_result_again_btn():
             self.log_info("处理任务界面: 开始任务")
+            if self.retry_mission_recognition:
+                # 点击后可能直接进入局内或等待超时，提前保留新一局的初始化依据。
+                self.mission_status = Mission.START
             self.start_mission()
             self.mission_status = Mission.START
             return
@@ -786,6 +836,9 @@ class CommissionsTask(LiseUltimateMixin, BaseDNATask):
                 self.log_info("处理任务界面: 终止任务")
                 return Mission.STOP
             self.log_info("处理任务界面: 继续任务")
+            if self.retry_mission_recognition:
+                # 确认超时后仍按继续轮次处理手册，避免误用首轮布局或重置局内统计。
+                self.mission_status = Mission.CONTINUE
             self.continue_mission()
             self.mission_status = Mission.CONTINUE
             return

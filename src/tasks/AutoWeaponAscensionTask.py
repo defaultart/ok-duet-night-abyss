@@ -15,7 +15,7 @@ class AutoWeaponAscensionTask(DNAOneTimeTask, CommissionsTask):
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self.name = "自动武器突破材料60级（调停）"
+        self.name = "自动武器突破材料（调停）"
         self.description = "在调停选择界面或结算页启动，保留当前等级，成功或失败结算后均再次进行，持续重刷直到手动停止"
         self.group_name = "半自动"
         self.group_icon = FluentIcon.VIEW
@@ -237,28 +237,34 @@ class AutoWeaponAscensionTask(DNAOneTimeTask, CommissionsTask):
             self.send_key_up(key)
 
     def advance_to_fuse(self):
-        duration = random.uniform(6.8, 6.9)
+        duration = random.uniform(6.7, 6.8)
         self.last_fuse_interaction = None
         try:
             self.send_key_down("w")
             deadline = time.monotonic() + duration
             if self.wait_for_result(max(0, deadline - 1 - time.monotonic())):
                 return True
-            self.set_phase("前进最后1秒：连续点按交互键")
+            self.set_phase("前进最后1秒起：连续点按交互键2秒")
+            interaction_deadline = deadline + 1
+            moving = True
             next_press = deadline - 1
             while True:
                 self.next_frame()
                 if self.find_result_again_btn():
                     return True
                 now = time.monotonic()
-                if deadline - now <= 1e-9:
+                if moving and now >= deadline:
+                    self.send_key_up("w")
+                    moving = False
+                if interaction_deadline - now <= 1e-9:
                     return False
                 if now >= next_press:
                     self.last_fuse_interaction = now
                     self.send_key(self.key_config["Interact Key"])
                     # Do not catch up with bursts if recognition or input is slow.
                     next_press = now + 0.1
-                remaining = min(deadline, next_press) - time.monotonic()
+                remaining = min(interaction_deadline, next_press,
+                                deadline if moving else interaction_deadline) - time.monotonic()
                 if remaining > 0:
                     self.sleep(remaining)
         finally:
@@ -280,16 +286,20 @@ class AutoWeaponAscensionTask(DNAOneTimeTask, CommissionsTask):
                 objective = self.objective_text()
                 if "可前往撤离点" in objective:
                     return self.evacuate()
-                if self.combat_objective(objective):
-                    combat_seen = True
-                    break
-                if self.has_fuse_prompt():
-                    self.set_phase("操作引信")
-                    self.send_key(self.key_config["Interact Key"])
-                    if self.wait_for_result(random.uniform(0.3, 0.7)):
-                        return True
-                    self.last_fuse_interaction = time.monotonic()
-                    self.send_key(self.key_config["Interact Key"])
+                if self.combat_objective(objective) or self.has_fuse_prompt():
+                    combat_seen = self.combat_objective(objective)
+                    self.set_phase("操作引信：1.5秒内连续点按交互键")
+                    interaction_deadline = time.monotonic() + 1.5
+                    while True:
+                        self.last_fuse_interaction = time.monotonic()
+                        self.send_key(self.key_config["Interact Key"])
+                        remaining = interaction_deadline - time.monotonic()
+                        if remaining <= 0:
+                            break
+                        if self.wait_for_result(min(0.2, remaining)):
+                            return True
+                        if time.monotonic() >= interaction_deadline:
+                            break
                     break
                 remaining = state_deadline - time.monotonic()
                 if remaining <= 0:

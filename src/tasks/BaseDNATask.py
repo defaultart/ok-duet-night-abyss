@@ -687,6 +687,8 @@ class BaseDNATask(BaseTask):
         if not self.enable_fidget_action:
             return
 
+        # 扶疏任务按次提供停止信号；闭包保留本次信号，快速重启时旧线程不会沿用新任务状态。
+        stop_event = getattr(self, '_fidget_stop_event', None)
         lalt_pressed = False
         needs_resync = False
 
@@ -803,7 +805,9 @@ class BaseDNATask(BaseTask):
         def smart_sleep(duration):
             deadline = time.time() + duration
             while time.time() < deadline:
-                if self.executor.current_task is None or self.executor.exit_event.is_set():
+                # 支持任务在执行器清理 current_task 之前主动结束后台流程；未提供信号的任务保持原行为。
+                if (self.executor.current_task is None or self.executor.exit_event.is_set()
+                        or (stop_event is not None and stop_event.is_set())):
                     return False
 
                 with self.fidget_input_lock:
@@ -830,7 +834,9 @@ class BaseDNATask(BaseTask):
             if self.executor.current_task:
                 self.log_info("fidget action started")
 
-            while self.executor.current_task is not None and not self.executor.exit_event.is_set():
+            # 每次循环检查所属运行的停止信号，避免任务退出或重启后继续产生后台输入。
+            while (self.executor.current_task is not None and not self.executor.exit_event.is_set()
+                   and (stop_event is None or not stop_event.is_set())):
                 with self.fidget_input_lock:
                     paused = fidget_is_paused()
                     if not paused:
@@ -854,7 +860,8 @@ class BaseDNATask(BaseTask):
 
         with self.fidget_input_lock:
             self._fidget_pause_hook = fidget_is_paused
-        self.thread_pool_executor.submit(_fidget_worker)
+        # 返回后台句柄供需要同步收尾的任务使用；现有忽略返回值的调用方式不受影响。
+        return self.thread_pool_executor.submit(_fidget_worker)
 
     @cached_property
     def fidget_input_lock(self):

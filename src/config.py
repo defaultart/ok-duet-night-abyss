@@ -241,6 +241,8 @@ config = {
         ["src.tasks.trigger.AutoLiseUltimateTask", "AutoLiseUltimateTask"],
         ["src.tasks.trigger.AutoMoveTask", "AutoMoveTask"],
         ["src.tasks.trigger.AutoAimTask", "AutoAimTask"],
+        # 独立识别红色敌人血条并跟随准星，保留原有花序弓蓄力任务行为。
+        ["src.tasks.trigger.AutoEnemyLockTask", "AutoEnemyLockTask"],
         ["src.tasks.trigger.AutoRogueDialogTask", "AutoRogueDialogTask"],
         ["src.tasks.trigger.AutoYvonneUltimateTask", "AutoYvonneUltimateTask"],
     ],
